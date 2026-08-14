@@ -61,7 +61,7 @@ function message(overrides: Record<string, unknown> = {}) {
       userId: "owner",
       chatId: "group-1",
       content: "/fix desktop-client 修复白屏",
-      materializeAttachments: async () => [] as string[],
+      materializeAttachments: async () => ({ imagePaths: [] as string[], filePaths: [] as string[] }),
       cleanupAttachments: async () => undefined,
       reply: async (text: string) => {
         replies.push(text);
@@ -180,7 +180,9 @@ describe("企微消息控制器", () => {
       createTaskId: () => "task-001",
       workflow: {
         async run(input) {
-          events.push(`workflow:${input.projectId}:${input.imagePaths.join(",")}`);
+          events.push(
+            `workflow:${input.projectId}:${input.imagePaths.join(",")}:${input.filePaths.join(",")}`,
+          );
           return successResult(input.taskId, input.projectId);
         },
       },
@@ -188,7 +190,10 @@ describe("企微消息控制器", () => {
     const current = message({
       materializeAttachments: async () => {
         events.push("attachments");
-        return ["/tmp/screenshot.png"];
+        return {
+          imagePaths: ["/tmp/screenshot.png"],
+          filePaths: ["/tmp/error.log"],
+        };
       },
       cleanupAttachments: async () => {
         events.push("cleanup");
@@ -203,7 +208,7 @@ describe("企微消息控制器", () => {
 
     assert.deepEqual(events, [
       "attachments",
-      "workflow:desktop-client:/tmp/screenshot.png",
+      "workflow:desktop-client:/tmp/screenshot.png:/tmp/error.log",
       "cleanup",
     ]);
     assert.match(current.notifications.at(-1) ?? "", /项目：desktop-client/);

@@ -140,6 +140,7 @@ process.stdin.on("end", () => {
         projectId: "electron-sample",
         prompt: "sum 函数错误地做了减法，请修复为加法，确保现有回归测试通过。",
         imagePaths: [],
+        filePaths: [],
         config,
         onProgress: () => undefined,
       });

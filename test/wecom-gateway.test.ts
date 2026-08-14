@@ -135,14 +135,113 @@ describe("企微消息适配", () => {
       assert.equal(incoming.content, "点击后崩溃");
       assert.equal(calls.length, 0);
 
-      const imagePaths = await incoming.materializeAttachments("task-002");
+      const attachments = await incoming.materializeAttachments("task-002");
       assert.equal(calls[0]?.method, "downloadFile");
       assert.deepEqual(calls[0]?.args, ["https://image", "aes-key"]);
-      assert.equal(await readFile(imagePaths[0] ?? "", "utf8"), "image-data");
-      assert.equal(imagePaths[0]?.endsWith("screen shot.png"), true);
+      assert.equal(await readFile(attachments.imagePaths[0] ?? "", "utf8"), "image-data");
+      assert.equal(attachments.imagePaths[0]?.endsWith("screen_shot.png"), true);
+      assert.deepEqual(attachments.filePaths, []);
 
       await incoming.cleanupAttachments("task-002");
       await assert.rejects(access(join(runtime, "incoming", "task-002")));
+    } finally {
+      await rm(runtime, { recursive: true, force: true });
+    }
+  });
+
+  it("把引用文本和语音转写追加为明确标记的问题上下文", () => {
+    const { client } = fakeClient();
+    const textFrame: TextFrame = {
+      headers: { req_id: "req-quote-text" },
+      body: {
+        msgid: "msg-quote-text",
+        from: { userid: "zhangsan" },
+        chatid: "group-1",
+        text: { content: "@代码机器人 /fix desktop-client 看看这个报错" },
+        quote: { msgtype: "text", text: { content: "TypeError: window is undefined" } },
+      },
+    };
+    const voiceFrame: TextFrame = {
+      headers: { req_id: "req-quote-voice" },
+      body: {
+        msgid: "msg-quote-voice",
+        from: { userid: "zhangsan" },
+        chatid: "group-1",
+        text: { content: "@代码机器人 /fix desktop-client 修复这个问题" },
+        quote: { msgtype: "voice", voice: { content: "打开软件后一直白屏" } },
+      },
+    };
+
+    const quotedText = createIncomingTextMessage(client, "/tmp/runtime", textFrame, () => "stream");
+    const quotedVoice = createIncomingTextMessage(client, "/tmp/runtime", voiceFrame, () => "stream");
+
+    assert.match(quotedText.content, /被引用消息：文本/);
+    assert.match(quotedText.content, /TypeError: window is undefined/);
+    assert.match(quotedVoice.content, /被引用消息：语音转写/);
+    assert.match(quotedVoice.content, /打开软件后一直白屏/);
+  });
+
+  it("引用图文中的文字进入上下文，图片在授权后才下载", async () => {
+    const runtime = await mkdtemp(join(tmpdir(), "wecom-quote-mixed-"));
+    const { client, calls } = fakeClient();
+    const frame: TextFrame = {
+      headers: { req_id: "req-quote-mixed" },
+      body: {
+        msgid: "msg-quote-mixed",
+        from: { userid: "zhangsan" },
+        chatid: "group-1",
+        text: { content: "@代码机器人 /fix desktop-client 根据引用修复" },
+        quote: {
+          msgtype: "mixed",
+          mixed: {
+            msg_item: [
+              { msgtype: "text", text: { content: "点击保存后页面卡死" } },
+              { msgtype: "image", image: { url: "https://quote-image", aeskey: "quote-aes" } },
+            ],
+          },
+        },
+      },
+    };
+
+    try {
+      const incoming = createIncomingTextMessage(client, runtime, frame, () => "stream");
+      assert.match(incoming.content, /被引用消息：图文/);
+      assert.match(incoming.content, /点击保存后页面卡死/);
+      assert.equal(calls.length, 0);
+
+      const attachments = await incoming.materializeAttachments("task-quote-mixed");
+      assert.deepEqual(calls[0]?.args, ["https://quote-image", "quote-aes"]);
+      assert.equal(attachments.imagePaths.length, 1);
+      assert.deepEqual(attachments.filePaths, []);
+    } finally {
+      await rm(runtime, { recursive: true, force: true });
+    }
+  });
+
+  it("引用文件在授权后下载为普通文件附件，不会作为图片参数传给 Codex", async () => {
+    const runtime = await mkdtemp(join(tmpdir(), "wecom-quote-file-"));
+    const { client, calls } = fakeClient();
+    const frame: TextFrame = {
+      headers: { req_id: "req-quote-file" },
+      body: {
+        msgid: "msg-quote-file",
+        from: { userid: "zhangsan" },
+        chatid: "group-1",
+        text: { content: "@代码机器人 /fix desktop-client 分析引用日志" },
+        quote: { msgtype: "file", file: { url: "https://quote-file", aeskey: "file-aes" } },
+      },
+    };
+
+    try {
+      const incoming = createIncomingTextMessage(client, runtime, frame, () => "stream");
+      assert.match(incoming.content, /被引用消息：文件/);
+      assert.equal(calls.length, 0);
+
+      const attachments = await incoming.materializeAttachments("task-quote-file");
+      assert.deepEqual(calls[0]?.args, ["https://quote-file", "file-aes"]);
+      assert.deepEqual(attachments.imagePaths, []);
+      assert.equal(await readFile(attachments.filePaths[0] ?? "", "utf8"), "image-data");
+      assert.equal(attachments.filePaths[0]?.endsWith("screen_shot.png"), true);
     } finally {
       await rm(runtime, { recursive: true, force: true });
     }

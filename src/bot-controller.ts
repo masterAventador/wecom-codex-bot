@@ -9,7 +9,10 @@ export type IncomingBotMessage = {
   userId: string;
   chatId?: string;
   content: string;
-  materializeAttachments(taskId: string): Promise<string[]>;
+  materializeAttachments(taskId: string): Promise<{
+    imagePaths: string[];
+    filePaths: string[];
+  }>;
   cleanupAttachments(taskId: string): Promise<void>;
   reply(text: string): Promise<void>;
   notify(text: string): Promise<void>;
@@ -110,12 +113,13 @@ export class BotController {
     const taskId = this.#dependencies.createTaskId(message.msgId);
     const queued = this.#queue.enqueue(message.msgId, async () => {
       try {
-        const imagePaths = await message.materializeAttachments(taskId);
+        const attachments = await message.materializeAttachments(taskId);
         return await this.#dependencies.workflow.run({
           taskId,
           projectId: decision.projectId,
           prompt: decision.prompt,
-          imagePaths,
+          imagePaths: attachments.imagePaths,
+          filePaths: attachments.filePaths,
           config,
           onProgress: (progress) => {
             void message.notify(`**${taskId}**：${progress}`).catch(() => undefined);

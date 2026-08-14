@@ -1,3 +1,6 @@
+import { chmod, copyFile, mkdir, rm, rmdir } from "node:fs/promises";
+import { basename, join } from "node:path";
+
 import type { ArtifactPublisher, PublishedArtifact } from "./artifact-publisher.ts";
 import { buildCodexPrompt, type CodexRunResult, type RunCodexOptions } from "./codex-runner.ts";
 import type { BotConfig } from "./config.ts";
@@ -26,6 +29,7 @@ export type TaskWorkflowInput = {
   projectId: string;
   prompt: string;
   imagePaths: readonly string[];
+  filePaths: readonly string[];
   config: BotConfig;
   onProgress(message: string): void;
 };
@@ -43,6 +47,7 @@ const BOT_SECRET_KEYS = new Set(["WECOM_BOT_SECRET", "COS_SECRET_ID", "COS_SECRE
 const INSTALL_TIMEOUT_MS = 20 * 60_000;
 const TEST_TIMEOUT_MS = 30 * 60_000;
 const BUILD_TIMEOUT_MS = 45 * 60_000;
+const SAFE_TASK_ID_PATTERN = /^[a-zA-Z0-9._-]+$/;
 
 export function createSafeProjectEnvironment(environment: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.fromEntries(
@@ -61,6 +66,55 @@ function command(value: string[]): [string, ...string[]] {
 function commitMessage(prompt: string): string {
   const summary = prompt.replace(/\s+/g, " ").trim().slice(0, 60);
   return `fix(bot): ${summary}`;
+}
+
+type StagedQuotedFiles = {
+  relativePaths: string[];
+  cleanup(): Promise<void>;
+};
+
+async function stageQuotedFiles(
+  worktreePath: string,
+  taskId: string,
+  sourcePaths: readonly string[],
+): Promise<StagedQuotedFiles> {
+  if (sourcePaths.length === 0) {
+    return { relativePaths: [], cleanup: async () => undefined };
+  }
+  if (!SAFE_TASK_ID_PATTERN.test(taskId)) {
+    throw new Error("任务编号含有不安全字符，无法暂存引用文件");
+  }
+  const inputRoot = join(worktreePath, ".wecom-input");
+  const taskDirectory = join(inputRoot, taskId);
+  await mkdir(inputRoot, { recursive: true });
+  await mkdir(taskDirectory);
+  const cleanup = async () => {
+    await rm(taskDirectory, { recursive: true, force: true });
+    await rmdir(inputRoot).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== "ENOTEMPTY" && error.code !== "ENOENT") {
+        throw error;
+      }
+    });
+  };
+  const relativePaths: string[] = [];
+  try {
+    for (const [index, sourcePath] of sourcePaths.entries()) {
+      const rawName = basename(sourcePath);
+      const normalizedName = rawName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 120);
+      const safeName = normalizedName === "." || normalizedName === ".." || normalizedName.length === 0
+        ? `attachment-${index + 1}.bin`
+        : normalizedName;
+      const filename = `${index + 1}-${safeName}`;
+      const destinationPath = join(taskDirectory, filename);
+      await copyFile(sourcePath, destinationPath);
+      await chmod(destinationPath, 0o400);
+      relativePaths.push(`.wecom-input/${taskId}/${filename}`);
+    }
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+  return { relativePaths, cleanup };
 }
 
 export class TaskWorkflow {
@@ -96,15 +150,25 @@ export class TaskWorkflow {
       env: projectEnvironment,
     });
 
-    input.onProgress("Codex 正在分析和修改代码");
-    const codexResult = await this.#dependencies.runCodex({
-      binary: config.codex.binary,
-      cwd: workspace.worktreePath,
-      prompt: buildCodexPrompt(input.prompt),
-      timeoutMs: config.codex.timeoutMinutes * 60_000,
-      imagePaths: input.imagePaths,
-      onProgress: input.onProgress,
-    });
+    const quotedFiles = await stageQuotedFiles(
+      workspace.worktreePath,
+      input.taskId,
+      input.filePaths,
+    );
+    let codexResult: CodexRunResult;
+    try {
+      input.onProgress("Codex 正在分析和修改代码");
+      codexResult = await this.#dependencies.runCodex({
+        binary: config.codex.binary,
+        cwd: workspace.worktreePath,
+        prompt: buildCodexPrompt(input.prompt, quotedFiles.relativePaths),
+        timeoutMs: config.codex.timeoutMinutes * 60_000,
+        imagePaths: input.imagePaths,
+        onProgress: input.onProgress,
+      });
+    } finally {
+      await quotedFiles.cleanup();
+    }
 
     const status = await this.#dependencies.runCommand({
       command: ["git", "status", "--porcelain"],
