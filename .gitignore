@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+config/local.json
+.runtime/
+coverage/
+*.log
+.DS_Store
