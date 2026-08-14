@@ -6,17 +6,24 @@ import type { PublishedArtifact } from "../src/artifact-publisher.ts";
 import { createSafeProjectEnvironment, TaskWorkflow } from "../src/task-workflow.ts";
 
 const config: BotConfig = {
-  security: { allowedUserIds: ["owner"], allowedChatIds: ["group"] },
-  repository: {
-    path: "/tmp/repository",
-    baseBranch: "dev",
-    remote: "origin",
-    fetchBeforeTask: false,
-    installCommand: ["npm", "ci"],
-    testCommand: ["npm", "test"],
-    buildCommand: ["npm", "run", "dist"],
-    artifactGlobs: ["release/*.dmg"],
+  projects: {
+    "desktop-client": {
+      path: "/tmp/repository",
+      baseBranch: "dev",
+      remote: "origin",
+      fetchBeforeTask: false,
+      installCommand: ["npm", "ci"],
+      testCommand: ["npm", "test"],
+      buildCommand: ["npm", "run", "dist"],
+      artifactGlobs: ["release/*.dmg"],
+    },
   },
+  permissionGroups: [{
+    name: "支持组",
+    allowedUserIds: ["owner"],
+    allowedChatIds: ["group"],
+    allowedProjectIds: ["desktop-client"],
+  }],
   codex: { binary: "codex", timeoutMinutes: 45 },
   git: {
     commitChanges: true,
@@ -64,6 +71,7 @@ describe("修复任务流水线", () => {
     const commands: string[][] = [];
     const workflow = new TaskWorkflow({
       async prepareWorkspace(options) {
+        assert.equal(options.repositoryPath, "/tmp/repository");
         events.push(`workspace:${options.branchName}`);
         return { branchName: options.branchName, worktreePath: "/tmp/repository/wt/task-001" };
       },
@@ -98,12 +106,14 @@ describe("修复任务流水线", () => {
 
     const result = await workflow.run({
       taskId: "task-001",
+      projectId: "desktop-client",
       prompt: "修复启动白屏",
       imagePaths: ["/tmp/screenshot.png"],
       config,
       onProgress: (message) => progress.push(message),
     });
 
+    assert.equal(result.projectId, "desktop-client");
     assert.equal(result.branchName, "bot/task-001");
     assert.equal(result.commitHash, "abc1234");
     assert.equal(result.artifact.downloadUrl, publishedArtifact.downloadUrl);
@@ -159,6 +169,7 @@ describe("修复任务流水线", () => {
     await assert.rejects(
       workflow.run({
         taskId: "task-002",
+        projectId: "desktop-client",
         prompt: "修复问题",
         imagePaths: [],
         config,
@@ -199,6 +210,7 @@ describe("修复任务流水线", () => {
 
     await workflow.run({
       taskId: "task-push",
+      projectId: "desktop-client",
       prompt: "修复问题",
       imagePaths: [],
       config: pushConfig,
@@ -209,6 +221,28 @@ describe("修复任务流水线", () => {
       commands.some((value) =>
         value.join(" ") === "git push --set-upstream origin bot/task-push"),
       true,
+    );
+  });
+
+  it("拒绝执行未在配置中登记的项目", async () => {
+    const workflow = new TaskWorkflow({
+      async prepareWorkspace() { throw new Error("不应执行"); },
+      async runCommand() { throw new Error("不应执行"); },
+      async runCodex() { throw new Error("不应执行"); },
+      async findArtifact() { throw new Error("不应执行"); },
+      publisher: { async publish() { throw new Error("不应执行"); } },
+    });
+
+    await assert.rejects(
+      workflow.run({
+        taskId: "task-unknown",
+        projectId: "not-registered",
+        prompt: "修复问题",
+        imagePaths: [],
+        config,
+        onProgress: () => undefined,
+      }),
+      /项目未登记：not-registered/,
     );
   });
 });

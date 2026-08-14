@@ -7,18 +7,26 @@ export async function runPreflight(
   config: BotConfig,
   runner: CommandRunner = runCommand,
 ): Promise<void> {
-  const gitResult = await runner({
-    command: ["git", "rev-parse", "--is-inside-work-tree"],
-    cwd: config.repository.path,
-    timeoutMs: 30_000,
-  });
-  if (gitResult.stdout.trim() !== "true") {
-    throw new Error(`目标目录不是 Git 仓库：${config.repository.path}`);
+  const projects = Object.entries(config.projects);
+  for (const [projectId, project] of projects) {
+    const gitResult = await runner({
+      command: ["git", "rev-parse", "--is-inside-work-tree"],
+      cwd: project.path,
+      timeoutMs: 30_000,
+    });
+    if (gitResult.stdout.trim() !== "true") {
+      throw new Error(`目标项目 ${projectId} 不是 Git 仓库：${project.path}`);
+    }
+  }
+
+  const firstProject = projects[0]?.[1];
+  if (firstProject === undefined) {
+    throw new Error("没有登记任何目标项目");
   }
 
   const codexResult = await runner({
     command: [config.codex.binary, "login", "status"],
-    cwd: config.repository.path,
+    cwd: firstProject.path,
     timeoutMs: 30_000,
   });
   if (!codexResult.stdout.includes("Logged in using ChatGPT")) {

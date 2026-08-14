@@ -1,18 +1,40 @@
 {
-  "security": {
-    "allowedUserIds": ["你的企微userid"],
-    "allowedChatIds": ["允许触发机器人的群chatid"]
+  "projects": {
+    "desktop-client": {
+      "path": "/Users/你的用户名/代码/electron-desktop-client",
+      "baseBranch": "dev",
+      "remote": "origin",
+      "fetchBeforeTask": true,
+      "installCommand": ["npm", "ci"],
+      "testCommand": ["npm", "test"],
+      "buildCommand": ["npm", "run", "dist"],
+      "artifactGlobs": ["release/*.dmg", "release/*.exe"]
+    },
+    "admin-console": {
+      "path": "/Users/你的用户名/代码/electron-admin-console",
+      "baseBranch": "main",
+      "remote": "origin",
+      "fetchBeforeTask": true,
+      "installCommand": ["pnpm", "install", "--frozen-lockfile"],
+      "testCommand": ["pnpm", "test"],
+      "buildCommand": ["pnpm", "dist"],
+      "artifactGlobs": ["dist/*.dmg", "dist/*.exe"]
+    }
   },
-  "repository": {
-    "path": "/Users/你的用户名/代码/electron-project",
-    "baseBranch": "dev",
-    "remote": "origin",
-    "fetchBeforeTask": true,
-    "installCommand": ["npm", "ci"],
-    "testCommand": ["npm", "test"],
-    "buildCommand": ["npm", "run", "dist"],
-    "artifactGlobs": ["release/*.dmg", "release/*.exe"]
-  },
+  "permissionGroups": [
+    {
+      "name": "桌面端支持组",
+      "allowedUserIds": ["同事的企微userid"],
+      "allowedChatIds": ["周末反馈群chatid"],
+      "allowedProjectIds": ["desktop-client"]
+    },
+    {
+      "name": "负责人全项目组",
+      "allowedUserIds": ["你的企微userid"],
+      "allowedChatIds": ["周末反馈群chatid", "研发群chatid"],
+      "allowedProjectIds": ["desktop-client", "admin-console"]
+    }
+  ],
   "codex": {
     "binary": "/opt/homebrew/bin/codex",
     "timeoutMinutes": 45

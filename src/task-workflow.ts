@@ -23,6 +23,7 @@ type TaskWorkflowDependencies = {
 
 export type TaskWorkflowInput = {
   taskId: string;
+  projectId: string;
   prompt: string;
   imagePaths: readonly string[];
   config: BotConfig;
@@ -31,6 +32,7 @@ export type TaskWorkflowInput = {
 
 export type TaskWorkflowResult = {
   taskId: string;
+  projectId: string;
   branchName: string;
   commitHash: string;
   codexSummary: string;
@@ -70,13 +72,17 @@ export class TaskWorkflow {
 
   async run(input: TaskWorkflowInput): Promise<TaskWorkflowResult> {
     const { config } = input;
+    const project = config.projects[input.projectId];
+    if (project === undefined) {
+      throw new Error(`项目未登记：${input.projectId}`);
+    }
     const branchName = `${config.git.branchPrefix}/${input.taskId}`;
     input.onProgress("正在创建独立 Git 工作区");
     const workspace = await this.#dependencies.prepareWorkspace({
-      repositoryPath: config.repository.path,
-      baseBranch: config.repository.baseBranch,
-      remote: config.repository.remote,
-      fetchBeforeTask: config.repository.fetchBeforeTask,
+      repositoryPath: project.path,
+      baseBranch: project.baseBranch,
+      remote: project.remote,
+      fetchBeforeTask: project.fetchBeforeTask,
       branchName,
       worktreeName: input.taskId,
     });
@@ -84,7 +90,7 @@ export class TaskWorkflow {
 
     input.onProgress("正在安装项目依赖");
     await this.#dependencies.runCommand({
-      command: command(config.repository.installCommand),
+      command: command(project.installCommand),
       cwd: workspace.worktreePath,
       timeoutMs: INSTALL_TIMEOUT_MS,
       env: projectEnvironment,
@@ -112,7 +118,7 @@ export class TaskWorkflow {
 
     input.onProgress("代码已修改，正在运行测试");
     await this.#dependencies.runCommand({
-      command: command(config.repository.testCommand),
+      command: command(project.testCommand),
       cwd: workspace.worktreePath,
       timeoutMs: TEST_TIMEOUT_MS,
       env: projectEnvironment,
@@ -120,14 +126,14 @@ export class TaskWorkflow {
 
     input.onProgress("测试通过，正在构建 Electron 安装包");
     await this.#dependencies.runCommand({
-      command: command(config.repository.buildCommand),
+      command: command(project.buildCommand),
       cwd: workspace.worktreePath,
       timeoutMs: BUILD_TIMEOUT_MS,
       env: projectEnvironment,
     });
     const artifactPath = await this.#dependencies.findArtifact(
       workspace.worktreePath,
-      config.repository.artifactGlobs,
+      project.artifactGlobs,
     );
 
     if (config.git.commitChanges) {
@@ -153,7 +159,7 @@ export class TaskWorkflow {
       if (config.git.pushBranches) {
         input.onProgress("正在推送机器人任务分支");
         await this.#dependencies.runCommand({
-          command: ["git", "push", "--set-upstream", config.repository.remote, branchName],
+          command: ["git", "push", "--set-upstream", project.remote, branchName],
           cwd: workspace.worktreePath,
           timeoutMs: 180_000,
           env: gitEnvironment,
@@ -173,6 +179,7 @@ export class TaskWorkflow {
     input.onProgress("安装包已上传，正在发送结果");
     return {
       taskId: input.taskId,
+      projectId: input.projectId,
       branchName,
       commitHash: commit.stdout.trim(),
       codexSummary: codexResult.finalMessage,

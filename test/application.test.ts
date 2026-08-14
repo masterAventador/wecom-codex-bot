@@ -9,17 +9,24 @@ import { startApplication } from "../src/application.ts";
 import type { EventedWeComClient } from "../src/wecom-gateway.ts";
 
 const config = {
-  security: { allowedUserIds: ["owner"], allowedChatIds: ["group"] },
-  repository: {
-    path: "/tmp/repository",
-    baseBranch: "dev",
-    remote: "origin",
-    fetchBeforeTask: false,
-    installCommand: ["npm", "ci"],
-    testCommand: ["npm", "test"],
-    buildCommand: ["npm", "run", "dist"],
-    artifactGlobs: ["release/*.dmg"],
+  projects: {
+    "desktop-client": {
+      path: "/tmp/repository",
+      baseBranch: "dev",
+      remote: "origin",
+      fetchBeforeTask: false,
+      installCommand: ["npm", "ci"],
+      testCommand: ["npm", "test"],
+      buildCommand: ["npm", "run", "dist"],
+      artifactGlobs: ["release/*.dmg"],
+    },
   },
+  permissionGroups: [{
+    name: "支持组",
+    allowedUserIds: ["owner"],
+    allowedChatIds: ["group"],
+    allowedProjectIds: ["desktop-client"],
+  }],
   codex: { binary: "codex", timeoutMinutes: 45 },
   git: {
     commitChanges: true,
@@ -67,7 +74,7 @@ describe("应用启动", () => {
         logger: { info: () => undefined, error: () => undefined },
         dependencies: {
           async preflight(loadedConfig) {
-            events.push(`preflight:${loadedConfig.repository.baseBranch}`);
+            events.push(`preflight:${loadedConfig.projects["desktop-client"]?.baseBranch}`);
           },
           createPublisher(_loadedConfig, secrets) {
             events.push(`publisher:${secrets.wecom.botId}`);

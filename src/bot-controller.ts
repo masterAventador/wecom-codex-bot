@@ -27,6 +27,9 @@ type BotControllerDependencies = {
 
 export type HandleResult =
   | { kind: "identity" }
+  | { kind: "projects" }
+  | { kind: "project-required" }
+  | { kind: "usage" }
   | { kind: "denied" }
   | { kind: "ignored" }
   | { kind: "duplicate" }
@@ -36,6 +39,7 @@ function successMessage(result: TaskWorkflowResult): string {
   const sizeMb = (result.artifact.sizeBytes / 1024 / 1024).toFixed(1);
   return `## 修复完成：${result.taskId}
 
+- 项目：${result.projectId}
 - 分支：${result.branchName}
 - 提交：${result.commitHash}
 - 安装包：${result.artifact.filename}（${sizeMb} MB）
@@ -61,7 +65,7 @@ export class BotController {
 
   async handle(message: IncomingBotMessage): Promise<HandleResult> {
     const config = await this.#dependencies.loadConfig();
-    const decision = authorizeMessage(config.security, {
+    const decision = authorizeMessage(config.permissionGroups, {
       command: classifyMessage(message.content),
       userId: message.userId,
       ...(message.chatId === undefined ? {} : { chatId: message.chatId }),
@@ -76,9 +80,27 @@ export class BotController {
     if (decision.kind === "ignore") {
       return { kind: "ignored" };
     }
+    if (decision.kind === "usage") {
+      await message.reply("用法：`/fix <项目ID> <问题描述>`；发送 `/projects` 查看可用项目。");
+      return { kind: "usage" };
+    }
+    if (decision.kind === "projects") {
+      await message.reply(`当前群可操作项目：\n${decision.projectIds.map((id) => `- ${id}`).join("\n")}`);
+      return { kind: "projects" };
+    }
+    if (decision.kind === "project-required") {
+      await message.reply(
+        `你在当前群有多个可操作项目，请明确指定：\n${decision.projectIds.map((id) => `- ${id}`).join("\n")}\n\n用法：\`/fix <项目ID> <问题描述>\``,
+      );
+      return { kind: "project-required" };
+    }
     if (decision.kind === "denied") {
       if (decision.reason === "user") {
         await message.reply(`无权触发代码任务。你的 userid：${decision.userId}`);
+      } else if (decision.reason === "project") {
+        await message.reply(
+          `你无权操作项目 ${decision.projectId}。当前可用项目：${decision.allowedProjectIds.join("、")}`,
+        );
       } else {
         await message.reply(`当前群不在白名单中。chatid：${message.chatId ?? "无"}`);
       }
@@ -91,6 +113,7 @@ export class BotController {
         const imagePaths = await message.materializeAttachments(taskId);
         return await this.#dependencies.workflow.run({
           taskId,
+          projectId: decision.projectId,
           prompt: decision.prompt,
           imagePaths,
           config,
@@ -107,7 +130,9 @@ export class BotController {
       return { kind: "duplicate" };
     }
 
-    await message.reply(`已创建任务 **${taskId}**，当前队列位置：${queued.position}`);
+    await message.reply(
+      `已创建任务 **${taskId}**，项目：**${decision.projectId}**，当前队列位置：${queued.position}`,
+    );
     const completion = queued.completion.then(
       async (result) => message.notify(successMessage(result)),
       async (error: unknown) => message.notify(failureMessage(taskId, error)),

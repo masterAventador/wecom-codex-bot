@@ -1,30 +1,49 @@
 # 企微 Codex 自动修复机器人
 
-这是一个只在本机运行的 TypeScript 服务。群成员在企业微信群里 `@机器人` 反馈问题后，服务会在独立 Git worktree 中调用本机已登录的 Codex 修改代码，运行项目测试，构建 Electron 安装包，上传到对象存储，再把下载链接发回原群。
+这是一个只在本机运行的 TypeScript 服务。群成员在企业微信群里 `@机器人` 反馈问题后，服务会先按 `userid + chatid + projectId` 校验权限，再到预先登记的目标项目中创建独立 Git worktree，调用本机已登录的 Codex 修改代码、运行测试、构建 Electron 安装包，最后上传对象存储并把下载链接发回原群。
 
-服务只建立到企业微信的出站 WebSocket 长连接，不需要公网 IP、域名或回调服务器。
+一个机器人进程可以管理多个代码项目和多套权限组。服务只建立到企业微信的出站 WebSocket 长连接，不需要公网 IP、域名或回调服务器。
 
 ## 已实现能力
 
 - 使用企业微信智能机器人 WebSocket Node SDK 收发消息。
-- 同时校验群成员 `userid` 和群 `chatid` 白名单。
-- `/whoami` 只返回当前 `userid` 和 `chatid`，永远不会触发代码任务。
-- 相同 `msgid` 在当前进程内只执行一次。
-- 所有任务串行执行，避免同时修改同一个仓库。
+- 使用项目注册表管理多个代码仓库，群消息不能传入任意电脑路径。
+- 按 `userid + chatid + projectId` 三者交集授权。
+- `/whoami` 返回当前 `userid` 和 `chatid`，不会触发代码任务。
+- `/projects` 只列出当前用户在当前群可以操作的项目。
+- `/fix <项目ID> <问题描述>` 明确选择目标项目；只有一个可用项目时也可直接发送问题。
+- 每条消息到达时重新读取权限组配置，修改白名单不需要重启。
+- 相同 `msgid` 在当前进程内只执行一次，所有项目的任务统一串行排队。
 - 每个任务在目标仓库的 `wt/<任务编号>` 中创建独立 worktree 和 `bot/<任务编号>` 分支。
-- 通过当前 macOS 用户的 ChatGPT 登录调用本地 Codex，不需要 OpenAI API Key。
-- 支持群内文字和图文混排反馈；图片只有通过白名单后才会下载，任务结束后自动删除。
-- Codex 修改完成后，由外层服务独立执行测试和 Electron 打包命令。
+- 通过当前 macOS 用户的 ChatGPT 登录调用本地 Codex，不需要 OpenAI API Key 或 API 代理。
+- 支持群内文字和图文混排反馈；附件只有通过三重授权后才下载，任务结束后自动删除。
+- Codex 修改完成后，由外层服务独立执行该项目配置的测试和 Electron 打包命令。
 - 支持腾讯云 COS 上传 115MB 等大安装包，并生成限时签名下载地址。
 - 可选择自动提交、自动推送任务分支；永远不会自动合并主分支。
 - 企微和 COS 密钥不会传入 Codex，也不会传给目标项目的安装、测试和构建命令。
 
+## 群内命令
+
+```text
+@机器人 /whoami
+@机器人 /projects
+@机器人 /fix desktop-client 修复登录按钮点击无反应
+```
+
+- `/whoami`：任何人都能查看自己的 `userid` 和当前群的 `chatid`。
+- `/projects`：列出发送者在当前群有权操作的项目。
+- `/fix <项目ID> <问题描述>`：选择项目并创建修复任务。
+- 如果发送者在当前群只有一个可用项目，可以直接 `@机器人 修复登录按钮点击无反应`。
+- 如果有多个可用项目但没有指定，机器人只会提示选择，不会让 Codex 猜测代码目录。
+
 ## 工作流程
 
 ```text
-群成员 @机器人反馈问题
+群成员 @机器人反馈问题并选择 projectId
         ↓
-userid + chatid 白名单校验
+userid + chatid + projectId 权限组校验
+        ↓
+从项目注册表读取固定仓库路径和命令
         ↓
 进入本机串行任务队列
         ↓
@@ -43,7 +62,7 @@ Electron 构建 → Git 提交/可选推送
 
 - Node.js 20 或更高版本。
 - Git。
-- 可以正常构建目标 Electron 项目的完整本地环境。
+- 可以正常构建所有登记 Electron 项目的完整本地环境。
 - 已安装并登录 Codex CLI：
 
 ```bash
@@ -66,9 +85,7 @@ cp config/local.example.json config/local.json
 
 ## 获取 userid 和 chatid
 
-企微智能机器人收到的每条消息都包含发送者的 `from.userid`，群消息还包含 `chatid`。
-
-第一次启动时，可以暂时在 `config/local.json` 中保留示例占位值。把机器人加入目标群后发送：
+企微智能机器人收到的每条消息都包含发送者的 `from.userid`，群消息还包含 `chatid`。可以从企微管理后台、通讯录接口或机器人收到的消息中取得；最方便的方式是在目标群发送：
 
 ```text
 @机器人 /whoami
@@ -81,51 +98,78 @@ cp config/local.example.json config/local.json
 当前 chatid：wrxxxxxxxx
 ```
 
-把结果写入：
+## 登记多个项目
+
+编辑 `config/local.json` 的 `projects`。项目 ID 会暴露给群成员使用，建议采用简短稳定的英文标识：
 
 ```json
 {
-  "security": {
-    "allowedUserIds": ["zhangsan", "lisi"],
-    "allowedChatIds": ["wrxxxxxxxx"]
+  "projects": {
+    "desktop-client": {
+      "path": "/Users/你的用户名/代码/electron-desktop-client",
+      "baseBranch": "dev",
+      "remote": "origin",
+      "fetchBeforeTask": true,
+      "installCommand": ["npm", "ci"],
+      "testCommand": ["npm", "test"],
+      "buildCommand": ["npm", "run", "dist"],
+      "artifactGlobs": ["release/*.dmg", "release/*.exe"]
+    },
+    "admin-console": {
+      "path": "/Users/你的用户名/代码/electron-admin-console",
+      "baseBranch": "main",
+      "remote": "origin",
+      "fetchBeforeTask": true,
+      "installCommand": ["pnpm", "install", "--frozen-lockfile"],
+      "testCommand": ["pnpm", "test"],
+      "buildCommand": ["pnpm", "dist"],
+      "artifactGlobs": ["dist/*.dmg", "dist/*.exe"]
+    }
   }
 }
 ```
 
-白名单在每条消息到达时重新读取，保存配置后不用重启服务。未授权用户只能看到自己的 `userid`，不会创建 Git worktree，也不会调用 Codex。
+安全限制：
 
-## 配置目标 Electron 项目
+- `path` 必须是绝对路径。
+- 项目 ID 只能包含字母、数字、点、下划线和连字符，最长 64 个字符。
+- 安装、测试和构建命令必须写成参数数组，不经过 shell。
+- `artifactGlobs` 只能匹配工作区内部文件，不能使用绝对路径或 `..`。
+- 服务启动时会逐个确认登记目录是 Git 仓库。
 
-编辑 `config/local.json`：
+## 配置权限组
 
-```json
-{
-  "repository": {
-    "path": "/Users/你的用户名/代码/electron-project",
-    "baseBranch": "dev",
-    "remote": "origin",
-    "fetchBeforeTask": true,
-    "installCommand": ["npm", "ci"],
-    "testCommand": ["npm", "test"],
-    "buildCommand": ["npm", "run", "dist"],
-    "artifactGlobs": ["release/*.dmg", "release/*.exe"]
-  }
-}
-```
-
-命令必须写成参数数组，不经过 shell。这样群消息不会被拼接成终端命令。
-
-如果项目使用 pnpm，可以改为：
+`permissionGroups` 可以配置任意多组权限。只有同一个权限组同时命中发送者 `userid`、当前群 `chatid` 和目标 `projectId` 时才授权：
 
 ```json
 {
-  "installCommand": ["pnpm", "install", "--frozen-lockfile"],
-  "testCommand": ["pnpm", "test"],
-  "buildCommand": ["pnpm", "dist"]
+  "permissionGroups": [
+    {
+      "name": "桌面端支持组",
+      "allowedUserIds": ["zhangsan", "lisi"],
+      "allowedChatIds": ["wr_weekend_feedback"],
+      "allowedProjectIds": ["desktop-client"]
+    },
+    {
+      "name": "负责人全项目组",
+      "allowedUserIds": ["owner"],
+      "allowedChatIds": ["wr_weekend_feedback", "wr_development"],
+      "allowedProjectIds": ["desktop-client", "admin-console"]
+    }
+  ]
 }
 ```
 
-`artifactGlobs` 只允许工作区内的相对路径，不能包含 `..`。
+匹配规则：
+
+- 同一用户和群命中多个权限组时，可操作项目取这些权限组的并集。
+- 一个权限组里的用户列表和群列表是组合授权：列表中的任意用户都能在列表中的任意群操作该组项目。需要更严格组合时应拆成多个权限组。
+- 权限组名称不能重复，`allowedProjectIds` 必须全部存在于 `projects`。
+- 权限组在每条消息到达时重新读取，保存配置后不用重启。
+- 新增或修改项目路径后建议重启服务，让启动前检查覆盖新仓库。
+- 未授权用户不会创建 worktree、下载附件或调用 Codex。
+
+旧版配置中的顶层 `security` 和 `repository` 已被 `permissionGroups` 和 `projects` 取代，请按 `config/local.example.json` 迁移。
 
 ## 配置腾讯云 COS
 
@@ -184,9 +228,9 @@ WECOM_BOT_SECRET=你的Secret
 ```
 
 - `pushBranches=false`：只保留本地任务分支，适合第一阶段验证。
-- `pushBranches=true`：测试和构建通过后推送到配置的远端。必须同时启用 `commitChanges`。
+- `pushBranches=true`：测试和构建通过后推送到目标项目配置的远端，必须同时启用 `commitChanges`。
 - 服务不会自动合并 `dev`、`master` 或 `main`。
-- worktree 会保留在目标项目的 `wt/` 下，确认不再需要后可人工执行 `git worktree remove <路径>`。
+- worktree 会保留在相应项目的 `wt/` 下，确认不再需要后可人工执行 `git worktree remove <路径>`。
 
 ## 启动与停止
 
@@ -208,13 +252,7 @@ npm start
 caffeinate -dimsu npm start
 ```
 
-使用 `Ctrl+C` 停止。项目不会配置开机自启或后台常驻服务。
-
-开发时可以运行：
-
-```bash
-npm run dev
-```
+使用 `Ctrl+C` 停止。项目不会配置开机自启或后台常驻服务。开发时可以运行 `npm run dev`。
 
 ## 测试
 
@@ -240,7 +278,7 @@ RUN_LOCAL_CODEX_E2E=1 node --experimental-strip-types --test test/local-codex-e2
 
 ## 当前边界
 
-- 当前只配置一个目标代码仓库。
+- 所有项目共用一个串行队列；一个任务完成后才会处理下一个任务。
 - `msgid` 去重保存在内存中，服务重启后会清空；Git 分支名仍会阻止同一任务被无声覆盖。
 - 电脑休眠、关机或断网时机器人不可用。
 - Windows 安装包如果依赖原生模块，建议在 Windows 机器上构建和验收。
@@ -250,7 +288,8 @@ RUN_LOCAL_CODEX_E2E=1 node --experimental-strip-types --test test/local-codex-e2
 
 ## 安全设计
 
-- 白名单检查发生在附件下载、Git、Codex、测试和构建之前。
+- 三重权限检查发生在附件下载、Git、Codex、测试和构建之前。
+- 项目仓库只能来自本地 `projects` 注册表，群成员不能指定文件系统路径或任意构建命令。
 - Codex 使用自动审批的 `workspace-write` 沙箱，不使用 `danger-full-access`。
 - 群反馈被包裹为“不可信问题描述”，不能覆盖外层工作要求。
 - Codex 环境只继承登录和基本系统变量，不包含企微、COS、签名或项目发布密钥。

@@ -1,26 +1,46 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import { loadBotConfigFile, parseBotConfig, parseRuntimeSecrets } from "../src/config.ts";
 
+const desktopProject = {
+  path: "/tmp/electron-app",
+  baseBranch: "dev",
+  remote: "origin",
+  fetchBeforeTask: false,
+  installCommand: ["npm", "ci"],
+  testCommand: ["npm", "test"],
+  buildCommand: ["npm", "run", "dist"],
+  artifactGlobs: ["release/*.dmg"],
+} as const;
+
 const validConfig = {
-  security: {
-    allowedUserIds: ["zhangsan"],
-    allowedChatIds: ["group-1"],
+  projects: {
+    "desktop-client": desktopProject,
+    "admin-panel": {
+      ...desktopProject,
+      path: "/tmp/admin-panel",
+      baseBranch: "main",
+      buildCommand: ["pnpm", "dist"],
+    },
   },
-  repository: {
-    path: "/tmp/electron-app",
-    baseBranch: "dev",
-    remote: "origin",
-    fetchBeforeTask: false,
-    installCommand: ["npm", "ci"],
-    testCommand: ["npm", "test"],
-    buildCommand: ["npm", "run", "dist"],
-    artifactGlobs: ["release/*.dmg"],
-  },
+  permissionGroups: [
+    {
+      name: "桌面端支持组",
+      allowedUserIds: ["zhangsan"],
+      allowedChatIds: ["group-1"],
+      allowedProjectIds: ["desktop-client"],
+    },
+    {
+      name: "管理员组",
+      allowedUserIds: ["owner"],
+      allowedChatIds: ["group-1", "group-2"],
+      allowedProjectIds: ["desktop-client", "admin-panel"],
+    },
+  ],
   codex: {
     binary: "codex",
     timeoutMinutes: 45,
@@ -45,22 +65,55 @@ const validConfig = {
 } as const;
 
 describe("机器人配置", () => {
-  it("接受完整的本地制品配置", () => {
+  it("仓库内的多项目示例配置可以直接解析", async () => {
+    const content = await readFile(new URL("../config/local.example.json", import.meta.url), "utf8");
+    const config = parseBotConfig(JSON.parse(content) as unknown);
+
+    assert.ok(Object.keys(config.projects).length >= 2);
+    assert.ok(config.permissionGroups.length >= 2);
+  });
+
+  it("接受项目注册表和多套权限组", () => {
     const config = parseBotConfig(validConfig);
 
-    assert.equal(config.repository.baseBranch, "dev");
-    assert.deepEqual(config.repository.installCommand, ["npm", "ci"]);
+    assert.equal(config.projects["desktop-client"]?.baseBranch, "dev");
+    assert.deepEqual(config.projects["admin-panel"]?.buildCommand, ["pnpm", "dist"]);
+    assert.equal(config.permissionGroups[1]?.name, "管理员组");
     assert.equal(config.artifact.provider, "filesystem");
   });
 
-  it("拒绝空用户白名单", () => {
+  it("拒绝空项目注册表和空权限组", () => {
+    assert.throws(() => parseBotConfig({ ...validConfig, projects: {} }), /projects/);
+    assert.throws(() => parseBotConfig({ ...validConfig, permissionGroups: [] }), /permissionGroups/);
+  });
+
+  it("拒绝权限组引用未登记项目", () => {
     assert.throws(
       () =>
         parseBotConfig({
           ...validConfig,
-          security: { ...validConfig.security, allowedUserIds: [] },
+          permissionGroups: [
+            {
+              ...validConfig.permissionGroups[0],
+              allowedProjectIds: ["not-registered"],
+            },
+          ],
         }),
-      /allowedUserIds/,
+      /not-registered.*未在 projects 中登记/,
+    );
+  });
+
+  it("拒绝重复权限组名称", () => {
+    assert.throws(
+      () =>
+        parseBotConfig({
+          ...validConfig,
+          permissionGroups: [
+            validConfig.permissionGroups[0],
+            { ...validConfig.permissionGroups[1], name: validConfig.permissionGroups[0].name },
+          ],
+        }),
+      /权限组名称不能重复/,
     );
   });
 
@@ -69,9 +122,12 @@ describe("机器人配置", () => {
       () =>
         parseBotConfig({
           ...validConfig,
-          repository: { ...validConfig.repository, path: "../electron-app" },
+          projects: {
+            ...validConfig.projects,
+            "desktop-client": { ...desktopProject, path: "../electron-app" },
+          },
         }),
-      /repository.path/,
+      /projects.*desktop-client.*path|项目仓库路径/,
     );
   });
 
@@ -80,7 +136,10 @@ describe("机器人配置", () => {
       () =>
         parseBotConfig({
           ...validConfig,
-          repository: { ...validConfig.repository, artifactGlobs: ["../release/*.dmg"] },
+          projects: {
+            ...validConfig.projects,
+            "desktop-client": { ...desktopProject, artifactGlobs: ["../release/*.dmg"] },
+          },
         }),
       /artifactGlobs/,
     );
@@ -97,22 +156,31 @@ describe("机器人配置", () => {
     );
   });
 
-  it("每次从磁盘重新读取白名单配置", async () => {
+  it("每次从磁盘重新读取权限组配置", async () => {
     const temporaryRoot = await mkdtemp(join(tmpdir(), "wecom-config-"));
     const configPath = join(temporaryRoot, "local.json");
 
     try {
       await writeFile(configPath, JSON.stringify(validConfig));
-      assert.deepEqual((await loadBotConfigFile(configPath)).security.allowedUserIds, ["zhangsan"]);
+      assert.deepEqual(
+        (await loadBotConfigFile(configPath)).permissionGroups[0]?.allowedUserIds,
+        ["zhangsan"],
+      );
 
       await writeFile(
         configPath,
         JSON.stringify({
           ...validConfig,
-          security: { ...validConfig.security, allowedUserIds: ["lisi"] },
+          permissionGroups: [
+            { ...validConfig.permissionGroups[0], allowedUserIds: ["lisi"] },
+            validConfig.permissionGroups[1],
+          ],
         }),
       );
-      assert.deepEqual((await loadBotConfigFile(configPath)).security.allowedUserIds, ["lisi"]);
+      assert.deepEqual(
+        (await loadBotConfigFile(configPath)).permissionGroups[0]?.allowedUserIds,
+        ["lisi"],
+      );
     } finally {
       await rm(temporaryRoot, { recursive: true, force: true });
     }

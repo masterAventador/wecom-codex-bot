@@ -8,12 +8,33 @@ const artifactGlobSchema = z
   .string()
   .min(1)
   .refine((value) => !isAbsolute(value) && !value.split(/[\\/]/).includes(".."), {
-    message: "repository.artifactGlobs 不能使用绝对路径或 ..",
+    message: "artifactGlobs 不能使用绝对路径或 ..",
   });
 const absolutePathSchema = z
   .string()
   .min(1)
-  .refine(isAbsolute, "repository.path 必须是绝对路径");
+  .refine(isAbsolute, "项目仓库路径必须是绝对路径");
+const projectIdSchema = z
+  .string()
+  .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/, "项目 ID 只能包含字母、数字、点、下划线和连字符");
+
+const projectSchema = z.object({
+  path: absolutePathSchema,
+  baseBranch: z.string().min(1),
+  remote: z.string().min(1),
+  fetchBeforeTask: z.boolean(),
+  installCommand: commandSchema,
+  testCommand: commandSchema,
+  buildCommand: commandSchema,
+  artifactGlobs: z.array(artifactGlobSchema).min(1),
+});
+
+const permissionGroupSchema = z.object({
+  name: z.string().min(1),
+  allowedUserIds: z.array(z.string().min(1)).min(1),
+  allowedChatIds: z.array(z.string().min(1)).min(1),
+  allowedProjectIds: z.array(projectIdSchema).min(1),
+});
 
 const filesystemArtifactSchema = z.object({
   provider: z.literal("filesystem"),
@@ -34,20 +55,12 @@ const cosArtifactSchema = z.object({
 });
 
 const botConfigSchema = z.object({
-  security: z.object({
-    allowedUserIds: z.array(z.string().min(1)).min(1),
-    allowedChatIds: z.array(z.string().min(1)).min(1),
-  }),
-  repository: z.object({
-    path: absolutePathSchema,
-    baseBranch: z.string().min(1),
-    remote: z.string().min(1),
-    fetchBeforeTask: z.boolean(),
-    installCommand: commandSchema,
-    testCommand: commandSchema,
-    buildCommand: commandSchema,
-    artifactGlobs: z.array(artifactGlobSchema).min(1),
-  }),
+  projects: z
+    .record(projectIdSchema, projectSchema)
+    .refine((projects) => Object.keys(projects).length > 0, {
+      message: "projects 至少要登记一个项目",
+    }),
+  permissionGroups: z.array(permissionGroupSchema).min(1),
   codex: z.object({
     binary: z.string().min(1),
     timeoutMinutes: z.number().int().min(1).max(180),
@@ -68,10 +81,32 @@ const botConfigSchema = z.object({
     directory: z.string().min(1).refine(isAbsolute, "runtime.directory 必须是绝对路径"),
   }),
   artifact: z.discriminatedUnion("provider", [filesystemArtifactSchema, cosArtifactSchema]),
+}).superRefine((config, context) => {
+  const groupNames = new Set<string>();
+  for (const [groupIndex, group] of config.permissionGroups.entries()) {
+    if (groupNames.has(group.name)) {
+      context.addIssue({
+        code: "custom",
+        path: ["permissionGroups", groupIndex, "name"],
+        message: `权限组名称不能重复：${group.name}`,
+      });
+    }
+    groupNames.add(group.name);
+    for (const [projectIndex, projectId] of group.allowedProjectIds.entries()) {
+      if (config.projects[projectId] === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["permissionGroups", groupIndex, "allowedProjectIds", projectIndex],
+          message: `${projectId} 未在 projects 中登记`,
+        });
+      }
+    }
+  }
 });
 
 export type BotConfig = z.infer<typeof botConfigSchema>;
-export type SecurityConfig = BotConfig["security"];
+export type ProjectConfig = BotConfig["projects"][string];
+export type PermissionGroupConfig = BotConfig["permissionGroups"][number];
 export type RuntimeSecrets = {
   wecom: { botId: string; secret: string };
   cos?: { secretId: string; secretKey: string };

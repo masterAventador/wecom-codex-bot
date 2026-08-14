@@ -86,17 +86,24 @@ process.stdin.on("end", () => {
       await execFileAsync("git", ["commit", "-m", "initial"], { cwd: repositoryPath });
 
       const config: BotConfig = {
-        security: { allowedUserIds: ["owner"], allowedChatIds: ["group"] },
-        repository: {
-          path: repositoryPath,
-          baseBranch: "dev",
-          remote: "origin",
-          fetchBeforeTask: false,
-          installCommand: ["npm", "install", "--ignore-scripts"],
-          testCommand: ["npm", "test"],
-          buildCommand: ["npm", "run", "dist"],
-          artifactGlobs: ["release/*.dmg"],
+        projects: {
+          "electron-sample": {
+            path: repositoryPath,
+            baseBranch: "dev",
+            remote: "origin",
+            fetchBeforeTask: false,
+            installCommand: ["npm", "install", "--ignore-scripts"],
+            testCommand: ["npm", "test"],
+            buildCommand: ["npm", "run", "dist"],
+            artifactGlobs: ["release/*.dmg"],
+          },
         },
+        permissionGroups: [{
+          name: "端到端测试组",
+          allowedUserIds: ["owner"],
+          allowedChatIds: ["group"],
+          allowedProjectIds: ["electron-sample"],
+        }],
         codex: {
           binary: runRealCodex ? "/opt/homebrew/bin/codex" : fakeCodexPath,
           timeoutMinutes: 10,
@@ -130,12 +137,14 @@ process.stdin.on("end", () => {
 
       const result = await workflow.run({
         taskId: "e2e-task",
+        projectId: "electron-sample",
         prompt: "sum 函数错误地做了减法，请修复为加法，确保现有回归测试通过。",
         imagePaths: [],
         config,
         onProgress: () => undefined,
       });
 
+      assert.equal(result.projectId, "electron-sample");
       assert.equal(result.branchName, "bot/e2e-task");
       assert.match(result.commitHash, /^[a-f0-9]+$/);
       assert.equal(result.artifact.sizeBytes, 115 * 1024 * 1024);

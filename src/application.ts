@@ -89,7 +89,12 @@ export async function startApplication(options: StartApplicationOptions): Promis
   options.logger.info(
     {
       configPath: options.configPath,
-      repository: initialConfig.repository.path,
+      projects: Object.fromEntries(
+        Object.entries(initialConfig.projects).map(([projectId, project]) => [
+          projectId,
+          project.path,
+        ]),
+      ),
       artifactProvider: initialConfig.artifact.provider,
     },
     "企微 Codex 机器人已启动",
