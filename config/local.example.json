@@ -1,4 +1,8 @@
 {
+  "userDisplayNames": {
+    "同事的企微userid": "张三",
+    "你的企微userid": "负责人姓名"
+  },
   "projects": {
     "desktop-client": {
       "displayName": "桌面客户端",

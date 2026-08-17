@@ -67,6 +67,7 @@ type QueueTaskInput = {
   projectId: string;
   prompt: string;
   projectDisplayName: string;
+  initiatorDisplayName?: string;
   config: BotConfig;
   message: IncomingBotMessage;
   acknowledge(position: number): Promise<void>;
@@ -118,12 +119,16 @@ function failureMessage(taskDisplayName: string, error: unknown): string {
   return `## 修复失败：${taskDisplayName}\n\n${message.slice(0, 2_000)}`;
 }
 
-function mentionInitiator(message: IncomingBotMessage, text: string): string {
-  if (message.chatId === undefined) {
+function mentionInitiator(
+  message: IncomingBotMessage,
+  displayName: string | undefined,
+  text: string,
+): string {
+  if (message.chatId === undefined || displayName === undefined) {
     return text;
   }
-  const userId = message.userId.replace(/[<>\r\n]/gu, "");
-  return userId.length === 0 ? text : `<@${userId}>\n\n${text}`;
+  const safeName = displayName.replace(/[@<>\r\n*_`#]/gu, "").trim();
+  return safeName.length === 0 ? text : `@${safeName}\n\n${text}`;
 }
 
 export class BotController {
@@ -196,11 +201,13 @@ export class BotController {
     }
 
     const project = config.projects[decision.projectId]!;
+    const initiatorDisplayName = config.userDisplayNames?.[message.userId];
     return this.#queueTask({
       taskId,
       projectId: decision.projectId,
       prompt: decision.prompt,
       projectDisplayName: project.displayName,
+      ...(initiatorDisplayName === undefined ? {} : { initiatorDisplayName }),
       config,
       message,
       acknowledge: async (position) => message.reply(
@@ -241,11 +248,13 @@ export class BotController {
     }
 
     this.#pendingSelections.delete(selection.selectionId);
+    const initiatorDisplayName = config.userDisplayNames?.[pending.message.userId];
     return this.#queueTask({
       taskId: pending.taskId,
       projectId: selection.projectId,
       prompt: pending.prompt,
       projectDisplayName: project.displayName,
+      ...(initiatorDisplayName === undefined ? {} : { initiatorDisplayName }),
       config,
       message: pending.message,
       acknowledge: async () => selection.updateCard(
@@ -289,10 +298,12 @@ export class BotController {
     const completion = queued.completion.then(
       async (result) => input.message.notify(mentionInitiator(
         input.message,
+        input.initiatorDisplayName,
         successMessage(result, input.projectDisplayName, await getTaskDisplayName()),
       )),
       async (error: unknown) => input.message.notify(mentionInitiator(
         input.message,
+        input.initiatorDisplayName,
         failureMessage(await getTaskDisplayName(), error),
       )),
     );

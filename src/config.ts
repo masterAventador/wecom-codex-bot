@@ -76,6 +76,9 @@ const cosArtifactSchema = z.object({
 });
 
 const botConfigSchema = z.object({
+  userDisplayNames: z
+    .record(z.string().min(1), z.string().trim().min(1).max(30))
+    .optional(),
   projects: z
     .record(projectIdSchema, projectSchema)
     .refine((projects) => Object.keys(projects).length > 0, {

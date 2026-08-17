@@ -94,6 +94,19 @@ describe("机器人配置", () => {
     assert.equal(config.artifact.provider, "filesystem");
   });
 
+  it("接受 userid 到群聊显示姓名的本地映射", () => {
+    const config = parseBotConfig({
+      ...validConfig,
+      userDisplayNames: {
+        zhangsan: "张三",
+        owner: "魏帅",
+      },
+    });
+
+    assert.equal(config.userDisplayNames?.zhangsan, "张三");
+    assert.equal(config.userDisplayNames?.owner, "魏帅");
+  });
+
   it("代码交付项目不要求安装、构建和安装包配置", () => {
     const config = parseBotConfig({
       ...validConfig,

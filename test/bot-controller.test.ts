@@ -18,6 +18,10 @@ const project = {
 };
 
 const config: BotConfig = {
+  userDisplayNames: {
+    tester: "测试同事",
+    owner: "魏帅",
+  },
   projects: {
     "desktop-client": project,
     "admin-panel": { ...project, displayName: "管理后台", path: "/tmp/admin-panel" },
@@ -261,7 +265,7 @@ describe("自然对话消息控制器", () => {
     assert.match(current.notifications[1] ?? "", /代码修改完成/);
   });
 
-  it("最终群消息使用月日摘要标题、@发起人并隐藏原因", async () => {
+  it("最终群消息使用月日摘要标题、@显示姓名并隐藏原因", async () => {
     const controller = new BotController({
       loadConfig: async () => config,
       createTaskId: () => "20260817-114558-internal",
@@ -287,7 +291,8 @@ describe("自然对话消息控制器", () => {
 
     assert.doesNotMatch(current.replies[0] ?? "", /20260817-114558-internal/);
     const notification = current.notifications.at(-1) ?? "";
-    assert.match(notification, /^<@tester>\n\n## 代码修改完成：0817-README标题加标记/);
+    assert.match(notification, /^@测试同事\n\n## 代码修改完成：0817-README标题加标记/);
+    assert.doesNotMatch(notification, /<@|tester/);
     assert.doesNotMatch(notification, /原因：|20260817-114558-internal/);
     assert.match(notification, /修改：README 标题追加测试标记/);
     assert.match(notification, /测试：正文哈希保持一致/);
@@ -308,6 +313,25 @@ describe("自然对话消息控制器", () => {
     await result.completion;
 
     assert.doesNotMatch(current.notifications.at(-1) ?? "", /^<@/);
+  });
+
+  it("没有显示姓名映射时不在群消息中暴露 userid", async () => {
+    const configWithoutNames: BotConfig = { ...config, userDisplayNames: {} };
+    const controller = new BotController({
+      loadConfig: async () => configWithoutNames,
+      createTaskId: () => "task-no-name",
+      summarizeTaskTitle: async () => "修复启动白屏",
+      workflow: { async run(input) { return codeSuccessResult(input.taskId, input.projectId); } },
+    });
+    const current = message({ userId: "tester" });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("无姓名映射任务未入队");
+    await result.completion;
+
+    const notification = current.notifications.at(-1) ?? "";
+    assert.doesNotMatch(notification, /tester|<@/);
+    assert.match(notification, /^## 代码修改完成/);
   });
 
   it("有多个授权项目时保存原问题并回复展示名称选择卡片", async () => {
