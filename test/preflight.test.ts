@@ -51,4 +51,16 @@ describe("启动前检查", () => {
       /未使用 ChatGPT 登录/,
     );
   });
+
+  it("兼容 Codex CLI 把 ChatGPT 登录状态写到 stderr", async () => {
+    await assert.doesNotReject(
+      runPreflight(config, async (options) => ({
+        stdout: options.command[0] === "git" ? "true\n" : "",
+        stderr: options.command[0] === "git"
+          ? ""
+          : "WARNING: PATH alias unavailable\nLogged in using ChatGPT\n",
+        exitCode: 0,
+      })),
+    );
+  });
 });

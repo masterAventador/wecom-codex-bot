@@ -29,7 +29,8 @@ export async function runPreflight(
     cwd: firstProject.path,
     timeoutMs: 30_000,
   });
-  if (!codexResult.stdout.includes("Logged in using ChatGPT")) {
+  const loginStatus = `${codexResult.stdout}\n${codexResult.stderr}`;
+  if (!loginStatus.includes("Logged in using ChatGPT")) {
     throw new Error("本地 Codex 未使用 ChatGPT 登录，请先运行 codex login");
   }
 }
