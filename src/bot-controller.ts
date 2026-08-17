@@ -1,8 +1,13 @@
 import type { BotConfig } from "./config.ts";
-import { authorizeMessage } from "./authorization.ts";
+import { authorizeMessage, authorizeProjectSelection } from "./authorization.ts";
 import { classifyMessage } from "./message.ts";
 import { SerialTaskQueue } from "./serial-task-queue.ts";
 import type { TaskWorkflowInput, TaskWorkflowResult } from "./task-workflow.ts";
+
+export type ProjectChoice = {
+  projectId: string;
+  displayName: string;
+};
 
 export type IncomingBotMessage = {
   msgId: string;
@@ -15,7 +20,16 @@ export type IncomingBotMessage = {
   }>;
   cleanupAttachments(taskId: string): Promise<void>;
   reply(text: string): Promise<void>;
+  replyProjectSelection(selectionId: string, projects: readonly ProjectChoice[]): Promise<void>;
   notify(text: string): Promise<void>;
+};
+
+export type IncomingProjectSelection = {
+  selectionId: string;
+  projectId: string;
+  userId: string;
+  chatId?: string;
+  updateCard(text: string): Promise<void>;
 };
 
 type Workflow = {
@@ -25,24 +39,44 @@ type Workflow = {
 type BotControllerDependencies = {
   loadConfig(): Promise<BotConfig>;
   createTaskId(messageId: string): string;
+  now?(): number;
   workflow: Workflow;
 };
 
 export type HandleResult =
-  | { kind: "identity" }
-  | { kind: "projects" }
-  | { kind: "project-required" }
-  | { kind: "usage" }
+  | { kind: "project-selection"; selectionId: string }
   | { kind: "denied" }
+  | { kind: "expired" }
   | { kind: "ignored" }
   | { kind: "duplicate" }
   | { kind: "queued"; taskId: string; completion: Promise<void> };
 
-function successMessage(result: TaskWorkflowResult): string {
+type PendingProjectSelection = {
+  taskId: string;
+  prompt: string;
+  projectIds: readonly string[];
+  createdAt: number;
+  message: IncomingBotMessage;
+};
+
+type QueueTaskInput = {
+  taskId: string;
+  projectId: string;
+  prompt: string;
+  projectDisplayName: string;
+  config: BotConfig;
+  message: IncomingBotMessage;
+  acknowledge(position: number): Promise<void>;
+};
+
+const MAX_PROJECT_CARD_CHOICES = 6;
+const PROJECT_SELECTION_TTL_MS = 5 * 60 * 1_000;
+
+function successMessage(result: TaskWorkflowResult, projectDisplayName: string): string {
   const sizeMb = (result.artifact.sizeBytes / 1024 / 1024).toFixed(1);
   return `## 修复完成：${result.taskId}
 
-- 项目：${result.projectId}
+- 项目：${projectDisplayName}
 - 分支：${result.branchName}
 - 提交：${result.commitHash}
 - 安装包：${result.artifact.filename}（${sizeMb} MB）
@@ -61,12 +95,14 @@ function failureMessage(taskId: string, error: unknown): string {
 export class BotController {
   readonly #dependencies: BotControllerDependencies;
   readonly #queue = new SerialTaskQueue();
+  readonly #pendingSelections = new Map<string, PendingProjectSelection>();
 
   constructor(dependencies: BotControllerDependencies) {
     this.#dependencies = dependencies;
   }
 
   async handle(message: IncomingBotMessage): Promise<HandleResult> {
+    this.#deleteExpiredSelections();
     const config = await this.#dependencies.loadConfig();
     const decision = authorizeMessage(config.permissionGroups, {
       command: classifyMessage(message.content),
@@ -74,28 +110,8 @@ export class BotController {
       ...(message.chatId === undefined ? {} : { chatId: message.chatId }),
     });
 
-    if (decision.kind === "identity") {
-      await message.reply(
-        `你的 userid：${decision.userId}\n当前 chatid：${decision.chatId ?? "单聊无 chatid"}`,
-      );
-      return { kind: "identity" };
-    }
     if (decision.kind === "ignore") {
       return { kind: "ignored" };
-    }
-    if (decision.kind === "usage") {
-      await message.reply("用法：`/fix <项目ID> <问题描述>`；发送 `/projects` 查看可用项目。");
-      return { kind: "usage" };
-    }
-    if (decision.kind === "projects") {
-      await message.reply(`当前群可操作项目：\n${decision.projectIds.map((id) => `- ${id}`).join("\n")}`);
-      return { kind: "projects" };
-    }
-    if (decision.kind === "project-required") {
-      await message.reply(
-        `你在当前群有多个可操作项目，请明确指定：\n${decision.projectIds.map((id) => `- ${id}`).join("\n")}\n\n用法：\`/fix <项目ID> <问题描述>\``,
-      );
-      return { kind: "project-required" };
     }
     if (decision.kind === "denied") {
       if (decision.reason === "user") {
@@ -111,36 +127,149 @@ export class BotController {
     }
 
     const taskId = this.#dependencies.createTaskId(message.msgId);
-    const queued = this.#queue.enqueue(message.msgId, async () => {
+    if (decision.kind === "project-required") {
+      if (decision.projectIds.length > MAX_PROJECT_CARD_CHOICES) {
+        await message.reply(
+          `当前权限匹配了 ${decision.projectIds.length} 个项目，企微选择卡片最多支持 6 个项目。请调整权限组后重试。`,
+        );
+        return { kind: "denied" };
+      }
+      const selectionId = `select_${taskId}`;
+      const existing = this.#pendingSelections.get(selectionId);
+      if (existing !== undefined && !this.#selectionExpired(existing)) {
+        await message.reply("这条消息已经处理过，不会重复创建项目选择卡片。");
+        return { kind: "duplicate" };
+      }
+      this.#pendingSelections.delete(selectionId);
+      const projects = decision.projectIds.map((projectId) => ({
+        projectId,
+        displayName: config.projects[projectId]!.displayName,
+      }));
+      this.#pendingSelections.set(selectionId, {
+        taskId,
+        prompt: decision.prompt,
+        projectIds: decision.projectIds,
+        createdAt: this.#now(),
+        message,
+      });
       try {
-        const attachments = await message.materializeAttachments(taskId);
+        await message.replyProjectSelection(selectionId, projects);
+      } catch (error) {
+        this.#pendingSelections.delete(selectionId);
+        throw error;
+      }
+      return { kind: "project-selection", selectionId };
+    }
+
+    const project = config.projects[decision.projectId]!;
+    return this.#queueTask({
+      taskId,
+      projectId: decision.projectId,
+      prompt: decision.prompt,
+      projectDisplayName: project.displayName,
+      config,
+      message,
+      acknowledge: async (position) => message.reply(
+        `已创建任务 **${taskId}**，项目：**${project.displayName}**，当前队列位置：${position}`,
+      ),
+    });
+  }
+
+  async handleProjectSelection(selection: IncomingProjectSelection): Promise<HandleResult> {
+    this.#deleteExpiredSelections();
+    const pending = this.#pendingSelections.get(selection.selectionId);
+    if (pending === undefined) {
+      await selection.updateCard("选择已失效，请重新描述问题。");
+      return { kind: "expired" };
+    }
+    if (
+      pending.message.userId !== selection.userId
+      || pending.message.chatId !== selection.chatId
+    ) {
+      await selection.updateCard("无权操作：这张项目选择卡片不属于你或当前会话。");
+      return { kind: "denied" };
+    }
+
+    const config = await this.#dependencies.loadConfig();
+    const decision = authorizeProjectSelection(config.permissionGroups, {
+      userId: selection.userId,
+      projectId: selection.projectId,
+      ...(selection.chatId === undefined ? {} : { chatId: selection.chatId }),
+    });
+    const project = config.projects[selection.projectId];
+    if (
+      decision.kind === "denied"
+      || !pending.projectIds.includes(selection.projectId)
+      || project === undefined
+    ) {
+      await selection.updateCard("无权操作这个项目，请重新描述问题后再选择。");
+      return { kind: "denied" };
+    }
+
+    this.#pendingSelections.delete(selection.selectionId);
+    return this.#queueTask({
+      taskId: pending.taskId,
+      projectId: selection.projectId,
+      prompt: pending.prompt,
+      projectDisplayName: project.displayName,
+      config,
+      message: pending.message,
+      acknowledge: async () => selection.updateCard(
+        `已选择：${project.displayName}，任务 ${pending.taskId} 已创建。`,
+      ),
+    });
+  }
+
+  async #queueTask(input: QueueTaskInput): Promise<HandleResult> {
+    const queued = this.#queue.enqueue(input.message.msgId, async () => {
+      try {
+        const attachments = await input.message.materializeAttachments(input.taskId);
         return await this.#dependencies.workflow.run({
-          taskId,
-          projectId: decision.projectId,
-          prompt: decision.prompt,
+          taskId: input.taskId,
+          projectId: input.projectId,
+          prompt: input.prompt,
           imagePaths: attachments.imagePaths,
           filePaths: attachments.filePaths,
-          config,
+          config: input.config,
           onProgress: (progress) => {
-            void message.notify(`**${taskId}**：${progress}`).catch(() => undefined);
+            void input.message.notify(`**${input.taskId}**：${progress}`).catch(() => undefined);
           },
         });
       } finally {
-        await message.cleanupAttachments(taskId);
+        await input.message.cleanupAttachments(input.taskId);
       }
     });
     if (!queued.accepted) {
-      await message.reply("这条消息已经处理过，不会重复执行。");
+      await input.message.reply("这条消息已经处理过，不会重复执行。");
       return { kind: "duplicate" };
     }
 
-    await message.reply(
-      `已创建任务 **${taskId}**，项目：**${decision.projectId}**，当前队列位置：${queued.position}`,
-    );
     const completion = queued.completion.then(
-      async (result) => message.notify(successMessage(result)),
-      async (error: unknown) => message.notify(failureMessage(taskId, error)),
+      async (result) => input.message.notify(successMessage(result, input.projectDisplayName)),
+      async (error: unknown) => input.message.notify(failureMessage(input.taskId, error)),
     );
-    return { kind: "queued", taskId, completion };
+    try {
+      await input.acknowledge(queued.position);
+    } catch (error) {
+      void completion.catch(() => undefined);
+      throw error;
+    }
+    return { kind: "queued", taskId: input.taskId, completion };
+  }
+
+  #now(): number {
+    return this.#dependencies.now?.() ?? Date.now();
+  }
+
+  #selectionExpired(selection: PendingProjectSelection): boolean {
+    return this.#now() - selection.createdAt >= PROJECT_SELECTION_TTL_MS;
+  }
+
+  #deleteExpiredSelections(): void {
+    for (const [selectionId, selection] of this.#pendingSelections) {
+      if (this.#selectionExpired(selection)) {
+        this.#pendingSelections.delete(selectionId);
+      }
+    }
   }
 }

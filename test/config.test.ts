@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import { loadBotConfigFile, parseBotConfig, parseRuntimeSecrets } from "../src/config.ts";
 
 const desktopProject = {
+  displayName: "桌面客户端",
   path: "/tmp/electron-app",
   baseBranch: "dev",
   remote: "origin",
@@ -22,6 +23,7 @@ const validConfig = {
     "desktop-client": desktopProject,
     "admin-panel": {
       ...desktopProject,
+      displayName: "管理后台",
       path: "/tmp/admin-panel",
       baseBranch: "main",
       buildCommand: ["pnpm", "dist"],
@@ -32,12 +34,14 @@ const validConfig = {
       name: "桌面端支持组",
       allowedUserIds: ["zhangsan"],
       allowedChatIds: ["group-1"],
+      allowDirectMessages: false,
       allowedProjectIds: ["desktop-client"],
     },
     {
       name: "管理员组",
       allowedUserIds: ["owner"],
       allowedChatIds: ["group-1", "group-2"],
+      allowDirectMessages: true,
       allowedProjectIds: ["desktop-client", "admin-panel"],
     },
   ],
@@ -77,9 +81,34 @@ describe("机器人配置", () => {
     const config = parseBotConfig(validConfig);
 
     assert.equal(config.projects["desktop-client"]?.baseBranch, "dev");
+    assert.equal(config.projects["desktop-client"]?.displayName, "桌面客户端");
     assert.deepEqual(config.projects["admin-panel"]?.buildCommand, ["pnpm", "dist"]);
     assert.equal(config.permissionGroups[1]?.name, "管理员组");
+    assert.equal(config.permissionGroups[1]?.allowDirectMessages, true);
     assert.equal(config.artifact.provider, "filesystem");
+  });
+
+  it("要求每个项目配置展示名称，并拒绝重复展示名称", () => {
+    const { displayName: _displayName, ...withoutDisplayName } = desktopProject;
+    assert.throws(
+      () =>
+        parseBotConfig({
+          ...validConfig,
+          projects: { ...validConfig.projects, "desktop-client": withoutDisplayName },
+        }),
+      /displayName/,
+    );
+    assert.throws(
+      () =>
+        parseBotConfig({
+          ...validConfig,
+          projects: {
+            ...validConfig.projects,
+            "admin-panel": { ...validConfig.projects["admin-panel"], displayName: "桌面客户端" },
+          },
+        }),
+      /项目展示名称不能重复/,
+    );
   });
 
   it("拒绝空项目注册表和空权限组", () => {

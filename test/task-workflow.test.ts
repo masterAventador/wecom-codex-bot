@@ -11,6 +11,7 @@ import { createSafeProjectEnvironment, TaskWorkflow } from "../src/task-workflow
 const config: BotConfig = {
   projects: {
     "desktop-client": {
+      displayName: "桌面客户端",
       path: "/tmp/repository",
       baseBranch: "dev",
       remote: "origin",
@@ -25,6 +26,7 @@ const config: BotConfig = {
     name: "支持组",
     allowedUserIds: ["owner"],
     allowedChatIds: ["group"],
+    allowDirectMessages: false,
     allowedProjectIds: ["desktop-client"],
   }],
   codex: { binary: "codex", timeoutMinutes: 45 },

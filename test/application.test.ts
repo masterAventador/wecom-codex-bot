@@ -11,6 +11,7 @@ import type { EventedWeComClient } from "../src/wecom-gateway.ts";
 const config = {
   projects: {
     "desktop-client": {
+      displayName: "桌面客户端",
       path: "/tmp/repository",
       baseBranch: "dev",
       remote: "origin",
@@ -25,6 +26,7 @@ const config = {
     name: "支持组",
     allowedUserIds: ["owner"],
     allowedChatIds: ["group"],
+    allowDirectMessages: false,
     allowedProjectIds: ["desktop-client"],
   }],
   codex: { binary: "codex", timeoutMinutes: 45 },
@@ -53,6 +55,8 @@ describe("应用启动", () => {
     const listeners = new Map<string, (payload: unknown) => Promise<void> | void>();
     const client: EventedWeComClient = {
       async replyStream() {},
+      async replyTemplateCard() {},
+      async updateTemplateCard() {},
       async sendMessage() {},
       async downloadFile() { return { buffer: Buffer.alloc(0) }; },
       on(event, listener) { listeners.set(event, listener); return this; },

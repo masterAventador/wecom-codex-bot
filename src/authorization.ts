@@ -1,85 +1,95 @@
 import type { PermissionGroupConfig } from "./config.ts";
 import type { BotCommand } from "./message.ts";
 
-type AuthorizationInput = {
-  command: BotCommand;
+type ConversationInput = {
   userId: string;
   chatId?: string;
 };
 
-export type AuthorizationDecision =
-  | { kind: "identity"; userId: string; chatId?: string }
-  | { kind: "projects"; projectIds: string[] }
-  | { kind: "project-required"; prompt: string; projectIds: string[] }
-  | { kind: "usage" }
-  | { kind: "ignore" }
+type AuthorizationInput = ConversationInput & {
+  command: BotCommand;
+};
+
+type ProjectSelectionInput = ConversationInput & {
+  projectId: string;
+};
+
+type DeniedDecision =
   | { kind: "denied"; reason: "chat" }
   | { kind: "denied"; reason: "user"; userId: string }
-  | { kind: "denied"; reason: "project"; projectId: string; allowedProjectIds: string[] }
+  | { kind: "denied"; reason: "project"; projectId: string; allowedProjectIds: string[] };
+
+export type AuthorizationDecision =
+  | { kind: "project-required"; prompt: string; projectIds: string[] }
+  | { kind: "ignore" }
+  | DeniedDecision
   | { kind: "allowed"; projectId: string; prompt: string };
+
+export type ProjectSelectionDecision =
+  | DeniedDecision
+  | { kind: "allowed"; projectId: string };
 
 function uniqueSortedProjectIds(groups: readonly PermissionGroupConfig[]): string[] {
   return [...new Set(groups.flatMap((group) => group.allowedProjectIds))].sort();
+}
+
+function conversationAccess(
+  permissionGroups: readonly PermissionGroupConfig[],
+  input: ConversationInput,
+): DeniedDecision | { kind: "allowed"; projectIds: string[] } {
+  const conversationGroups = input.chatId === undefined
+    ? permissionGroups.filter((group) => group.allowDirectMessages)
+    : permissionGroups.filter((group) => group.allowedChatIds.includes(input.chatId!));
+  if (conversationGroups.length === 0 && input.chatId !== undefined) {
+    return { kind: "denied", reason: "chat" };
+  }
+  const userGroups = conversationGroups.filter((group) => group.allowedUserIds.includes(input.userId));
+  if (userGroups.length === 0) {
+    return { kind: "denied", reason: "user", userId: input.userId };
+  }
+  return { kind: "allowed", projectIds: uniqueSortedProjectIds(userGroups) };
 }
 
 export function authorizeMessage(
   permissionGroups: readonly PermissionGroupConfig[],
   input: AuthorizationInput,
 ): AuthorizationDecision {
-  if (input.command.kind === "identity") {
-    return {
-      kind: "identity",
-      userId: input.userId,
-      ...(input.chatId === undefined ? {} : { chatId: input.chatId }),
-    };
-  }
   if (input.command.kind === "ignore") {
     return { kind: "ignore" };
   }
-  if (input.command.kind === "usage") {
-    return { kind: "usage" };
+  const access = conversationAccess(permissionGroups, input);
+  if (access.kind === "denied") {
+    return access;
   }
-
-  const chatGroups = permissionGroups.filter(
-    (group) => input.chatId !== undefined && group.allowedChatIds.includes(input.chatId),
-  );
-  if (chatGroups.length === 0) {
-    return { kind: "denied", reason: "chat" };
-  }
-  const userGroups = chatGroups.filter((group) => group.allowedUserIds.includes(input.userId));
-  if (userGroups.length === 0) {
-    return { kind: "denied", reason: "user", userId: input.userId };
-  }
-
-  const allowedProjectIds = uniqueSortedProjectIds(userGroups);
-  if (input.command.kind === "projects") {
-    return { kind: "projects", projectIds: allowedProjectIds };
-  }
-  if (input.command.projectId !== undefined) {
-    if (!allowedProjectIds.includes(input.command.projectId)) {
-      return {
-        kind: "denied",
-        reason: "project",
-        projectId: input.command.projectId,
-        allowedProjectIds,
-      };
-    }
-    return {
-      kind: "allowed",
-      projectId: input.command.projectId,
-      prompt: input.command.prompt,
-    };
-  }
-  if (allowedProjectIds.length > 1) {
+  if (access.projectIds.length > 1) {
     return {
       kind: "project-required",
       prompt: input.command.prompt,
-      projectIds: allowedProjectIds,
+      projectIds: access.projectIds,
     };
   }
-  const [projectId] = allowedProjectIds;
+  const [projectId] = access.projectIds;
   if (projectId === undefined) {
     return { kind: "denied", reason: "user", userId: input.userId };
   }
   return { kind: "allowed", projectId, prompt: input.command.prompt };
+}
+
+export function authorizeProjectSelection(
+  permissionGroups: readonly PermissionGroupConfig[],
+  input: ProjectSelectionInput,
+): ProjectSelectionDecision {
+  const access = conversationAccess(permissionGroups, input);
+  if (access.kind === "denied") {
+    return access;
+  }
+  if (!access.projectIds.includes(input.projectId)) {
+    return {
+      kind: "denied",
+      reason: "project",
+      projectId: input.projectId,
+      allowedProjectIds: access.projectIds,
+    };
+  }
+  return { kind: "allowed", projectId: input.projectId };
 }

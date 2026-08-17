@@ -19,6 +19,7 @@ const projectIdSchema = z
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/, "项目 ID 只能包含字母、数字、点、下划线和连字符");
 
 const projectSchema = z.object({
+  displayName: z.string().trim().min(1).max(30),
   path: absolutePathSchema,
   baseBranch: z.string().min(1),
   remote: z.string().min(1),
@@ -33,6 +34,7 @@ const permissionGroupSchema = z.object({
   name: z.string().min(1),
   allowedUserIds: z.array(z.string().min(1)).min(1),
   allowedChatIds: z.array(z.string().min(1)).min(1),
+  allowDirectMessages: z.boolean().default(false),
   allowedProjectIds: z.array(projectIdSchema).min(1),
 });
 
@@ -82,6 +84,17 @@ const botConfigSchema = z.object({
   }),
   artifact: z.discriminatedUnion("provider", [filesystemArtifactSchema, cosArtifactSchema]),
 }).superRefine((config, context) => {
+  const displayNames = new Set<string>();
+  for (const [projectId, project] of Object.entries(config.projects)) {
+    if (displayNames.has(project.displayName)) {
+      context.addIssue({
+        code: "custom",
+        path: ["projects", projectId, "displayName"],
+        message: `项目展示名称不能重复：${project.displayName}`,
+      });
+    }
+    displayNames.add(project.displayName);
+  }
   const groupNames = new Set<string>();
   for (const [groupIndex, group] of config.permissionGroups.entries()) {
     if (groupNames.has(group.name)) {

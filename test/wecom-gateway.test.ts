@@ -23,6 +23,12 @@ function fakeClient() {
     async sendMessage(...args) {
       calls.push({ method: "sendMessage", args });
     },
+    async replyTemplateCard(...args) {
+      calls.push({ method: "replyTemplateCard", args });
+    },
+    async updateTemplateCard(...args) {
+      calls.push({ method: "updateTemplateCard", args });
+    },
     async downloadFile(...args) {
       calls.push({ method: "downloadFile", args });
       return { buffer: Buffer.from("image-data"), filename: "../screen shot.png" };
@@ -60,6 +66,9 @@ describe("企微消息适配", () => {
         async handle(message) {
           handledContent = message.content;
           return { kind: "ignored" };
+        },
+        async handleProjectSelection() {
+          return { kind: "expired" };
         },
       },
       logger: { error: () => undefined },
@@ -110,6 +119,122 @@ describe("企微消息适配", () => {
         args: ["group-1", { msgtype: "markdown", markdown: { content: "处理中" } }],
       },
     ]);
+  });
+
+  it("单聊任务进度主动发送给发消息人的 userid", async () => {
+    const { client, calls } = fakeClient();
+    const frame: TextFrame = {
+      headers: { req_id: "req-direct" },
+      body: {
+        msgid: "msg-direct",
+        from: { userid: "zhangsan" },
+        text: { content: "启动后白屏" },
+      },
+    };
+
+    const incoming = createIncomingTextMessage(client, "/tmp/runtime", frame, () => "stream");
+    await incoming.notify("处理中");
+
+    assert.deepEqual(calls, [{
+      method: "sendMessage",
+      args: ["zhangsan", { msgtype: "markdown", markdown: { content: "处理中" } }],
+    }]);
+  });
+
+  it("多项目消息回复带展示名称的项目选择卡片", async () => {
+    const { client, calls } = fakeClient();
+    const frame: TextFrame = {
+      headers: { req_id: "req-card" },
+      body: {
+        msgid: "msg-card",
+        from: { userid: "owner" },
+        chatid: "group-1",
+        text: { content: "修复权限页面" },
+      },
+    };
+    const incoming = createIncomingTextMessage(client, "/tmp/runtime", frame, () => "stream");
+
+    await incoming.replyProjectSelection("select_task-001", [
+      { projectId: "admin-panel", displayName: "管理后台" },
+      { projectId: "desktop-client", displayName: "桌面客户端" },
+    ]);
+
+    assert.deepEqual(calls, [{
+      method: "replyTemplateCard",
+      args: [frame, {
+        card_type: "button_interaction",
+        main_title: { title: "请选择要修改的项目" },
+        sub_title_text: "选择后会立即创建代码修改任务。",
+        button_list: [
+          { text: "管理后台", key: "admin-panel", style: 1 },
+          { text: "桌面客户端", key: "desktop-client", style: 1 },
+        ],
+        task_id: "select_task-001",
+      }],
+    }]);
+  });
+
+  it("接收项目卡片点击事件并通过事件帧立即更新卡片", async () => {
+    const listeners = new Map<string, (payload: unknown) => Promise<void> | void>();
+    const { client: base, calls } = fakeClient();
+    const client: EventedWeComClient = {
+      ...base,
+      on(event, listener) { listeners.set(event, listener); return this; },
+      connect() { return this; },
+      disconnect() {},
+    };
+    let received: unknown;
+    startWeComGateway({
+      client,
+      runtimeDirectory: "/tmp/runtime",
+      createStreamId: () => "stream",
+      controller: {
+        async handle() { return { kind: "ignored" }; },
+        async handleProjectSelection(selection) {
+          received = {
+            selectionId: selection.selectionId,
+            projectId: selection.projectId,
+            userId: selection.userId,
+            chatId: selection.chatId,
+          };
+          await selection.updateCard("已选择：管理后台，任务已创建。");
+          return { kind: "expired" };
+        },
+      },
+      logger: { error: () => undefined },
+    });
+    const frame = {
+      headers: { req_id: "req-card-event" },
+      body: {
+        msgid: "event-1",
+        from: { userid: "owner" },
+        chatid: "group-1",
+        event: {
+          eventtype: "template_card_event",
+          event_key: "admin-panel",
+          task_id: "select_task-001",
+        },
+      },
+    };
+
+    const listener = listeners.get("event.template_card_event");
+    assert.ok(listener);
+    await listener(frame);
+
+    assert.deepEqual(received, {
+      selectionId: "select_task-001",
+      projectId: "admin-panel",
+      userId: "owner",
+      chatId: "group-1",
+    });
+    assert.deepEqual(calls, [{
+      method: "updateTemplateCard",
+      args: [frame, {
+        card_type: "text_notice",
+        main_title: { title: "已选择：管理后台，任务已创建。" },
+        task_id: "select_task-001",
+      }, ["owner"]],
+    }]);
   });
 
   it("授权后才下载图文消息中的图片，并清理任务附件", async () => {

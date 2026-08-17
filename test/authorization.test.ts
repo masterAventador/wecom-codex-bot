@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { authorizeMessage } from "../src/authorization.ts";
+import { authorizeMessage, authorizeProjectSelection } from "../src/authorization.ts";
 import { classifyMessage } from "../src/message.ts";
 
 const permissionGroups = [
@@ -9,105 +9,38 @@ const permissionGroups = [
     name: "桌面端支持组",
     allowedUserIds: ["owner", "tester"],
     allowedChatIds: ["weekend-feedback"],
+    allowDirectMessages: false,
     allowedProjectIds: ["desktop-client"],
   },
   {
     name: "管理员组",
     allowedUserIds: ["owner"],
     allowedChatIds: ["weekend-feedback"],
+    allowDirectMessages: true,
     allowedProjectIds: ["desktop-client", "admin-panel"],
   },
 ];
 
-describe("消息分类与项目权限组", () => {
-  it("允许任何人用 /whoami 查询自己的 userid 和当前 chatid，但不触发任务", () => {
-    const command = classifyMessage("  /whoami  ");
-    const decision = authorizeMessage(permissionGroups, {
-      command,
-      userId: "unknown-user",
-      chatId: "unknown-chat",
-    });
-
-    assert.deepEqual(decision, {
-      kind: "identity",
-      userId: "unknown-user",
-      chatId: "unknown-chat",
-    });
-  });
-
-  it("群消息保留 @机器人 前缀时仍能识别命令", () => {
-    assert.deepEqual(classifyMessage("@代码机器人 /whoami"), { kind: "identity" });
-    assert.deepEqual(classifyMessage("@代码机器人 /projects"), { kind: "projects" });
-    assert.deepEqual(classifyMessage("@代码机器人 /fix desktop-client 修复启动白屏"), {
+describe("自然消息与项目权限组", () => {
+  it("移除机器人 @ 前缀后把普通语言完整作为问题描述", () => {
+    assert.deepEqual(classifyMessage("@代码机器人 修复启动白屏"), {
       kind: "request",
-      projectId: "desktop-client",
       prompt: "修复启动白屏",
     });
   });
 
-  it("列出用户在当前群有权操作的项目并去重排序", () => {
-    const decision = authorizeMessage(permissionGroups, {
-      command: classifyMessage("/projects"),
-      userId: "owner",
-      chatId: "weekend-feedback",
+  it("不再把斜杠内容解释为机器人命令", () => {
+    assert.deepEqual(classifyMessage("/fix desktop-client 修复启动白屏"), {
+      kind: "request",
+      prompt: "/fix desktop-client 修复启动白屏",
     });
-
-    assert.deepEqual(decision, {
-      kind: "projects",
-      projectIds: ["admin-panel", "desktop-client"],
+    assert.deepEqual(classifyMessage("/whoami"), {
+      kind: "request",
+      prompt: "/whoami",
     });
   });
 
-  it("先拒绝没有任何权限组覆盖的群", () => {
-    const decision = authorizeMessage(permissionGroups, {
-      command: classifyMessage("/fix desktop-client 修复启动白屏"),
-      userId: "owner",
-      chatId: "another-group",
-    });
-
-    assert.deepEqual(decision, { kind: "denied", reason: "chat" });
-  });
-
-  it("拒绝当前群权限组中的未授权用户", () => {
-    const decision = authorizeMessage(permissionGroups, {
-      command: classifyMessage("/fix desktop-client 修复启动白屏"),
-      userId: "visitor",
-      chatId: "weekend-feedback",
-    });
-
-    assert.deepEqual(decision, {
-      kind: "denied",
-      reason: "user",
-      userId: "visitor",
-    });
-  });
-
-  it("明确指定项目时按 userid + chatid + projectId 三者交集授权", () => {
-    const allowed = authorizeMessage(permissionGroups, {
-      command: classifyMessage("/fix desktop-client 修复启动白屏"),
-      userId: "tester",
-      chatId: "weekend-feedback",
-    });
-    const denied = authorizeMessage(permissionGroups, {
-      command: classifyMessage("/fix admin-panel 修复权限页"),
-      userId: "tester",
-      chatId: "weekend-feedback",
-    });
-
-    assert.deepEqual(allowed, {
-      kind: "allowed",
-      projectId: "desktop-client",
-      prompt: "修复启动白屏",
-    });
-    assert.deepEqual(denied, {
-      kind: "denied",
-      reason: "project",
-      projectId: "admin-panel",
-      allowedProjectIds: ["desktop-client"],
-    });
-  });
-
-  it("只有一个可用项目时允许省略 /fix 项目标识", () => {
+  it("群聊按 userid + chatid 得到可操作项目", () => {
     const decision = authorizeMessage(permissionGroups, {
       command: classifyMessage("修复启动白屏"),
       userId: "tester",
@@ -121,7 +54,7 @@ describe("消息分类与项目权限组", () => {
     });
   });
 
-  it("有多个可用项目但未指定时要求选择，不让机器人猜路径", () => {
+  it("多项目用户发送自然消息时要求显示项目选择卡片", () => {
     const decision = authorizeMessage(permissionGroups, {
       command: classifyMessage("修复启动白屏"),
       userId: "owner",
@@ -135,9 +68,75 @@ describe("消息分类与项目权限组", () => {
     });
   });
 
-  it("/fix 缺少项目或问题描述时返回用法提示", () => {
-    assert.deepEqual(classifyMessage("/fix"), { kind: "usage" });
-    assert.deepEqual(classifyMessage("/fix desktop-client"), { kind: "usage" });
+  it("单聊不需要 chatid，但只命中显式允许单聊的权限组", () => {
+    const owner = authorizeMessage(permissionGroups, {
+      command: classifyMessage("修复启动白屏"),
+      userId: "owner",
+    });
+    const tester = authorizeMessage(permissionGroups, {
+      command: classifyMessage("修复启动白屏"),
+      userId: "tester",
+    });
+
+    assert.deepEqual(owner, {
+      kind: "project-required",
+      prompt: "修复启动白屏",
+      projectIds: ["admin-panel", "desktop-client"],
+    });
+    assert.deepEqual(tester, {
+      kind: "denied",
+      reason: "user",
+      userId: "tester",
+    });
+  });
+
+  it("拒绝没有权限组覆盖的群和群内未授权用户", () => {
+    assert.deepEqual(
+      authorizeMessage(permissionGroups, {
+        command: classifyMessage("修复启动白屏"),
+        userId: "owner",
+        chatId: "another-group",
+      }),
+      { kind: "denied", reason: "chat" },
+    );
+    assert.deepEqual(
+      authorizeMessage(permissionGroups, {
+        command: classifyMessage("修复启动白屏"),
+        userId: "visitor",
+        chatId: "weekend-feedback",
+      }),
+      { kind: "denied", reason: "user", userId: "visitor" },
+    );
+  });
+
+  it("点击项目卡片时重新校验用户、会话和项目权限", () => {
+    assert.deepEqual(
+      authorizeProjectSelection(permissionGroups, {
+        userId: "owner",
+        chatId: "weekend-feedback",
+        projectId: "admin-panel",
+      }),
+      { kind: "allowed", projectId: "admin-panel" },
+    );
+    assert.deepEqual(
+      authorizeProjectSelection(permissionGroups, {
+        userId: "tester",
+        projectId: "desktop-client",
+      }),
+      { kind: "denied", reason: "user", userId: "tester" },
+    );
+    assert.deepEqual(
+      authorizeProjectSelection(permissionGroups, {
+        userId: "owner",
+        projectId: "not-allowed",
+      }),
+      {
+        kind: "denied",
+        reason: "project",
+        projectId: "not-allowed",
+        allowedProjectIds: ["admin-panel", "desktop-client"],
+      },
+    );
   });
 
   it("忽略空消息", () => {

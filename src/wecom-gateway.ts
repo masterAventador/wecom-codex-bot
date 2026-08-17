@@ -1,10 +1,13 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
-import type { QuoteContent } from "@wecom/aibot-node-sdk";
+import type { QuoteContent, TemplateCard, WsFrameHeaders } from "@wecom/aibot-node-sdk";
 
-import type { IncomingBotMessage } from "./bot-controller.ts";
-import type { HandleResult } from "./bot-controller.ts";
+import type {
+  HandleResult,
+  IncomingBotMessage,
+  IncomingProjectSelection,
+} from "./bot-controller.ts";
 
 type FrameHeaders = { req_id: string; [key: string]: unknown };
 type BaseBody = {
@@ -24,6 +27,18 @@ export type MixedFrame = {
   headers: FrameHeaders;
   body: BaseBody & { mixed: { msg_item: MixedItem[] } };
 };
+export type ProjectSelectionFrame = {
+  headers: FrameHeaders;
+  body: {
+    msgid: string;
+    from: { userid: string };
+    chatid?: string;
+    event: {
+      event_key?: string;
+      task_id?: string;
+    };
+  };
+};
 
 export interface WeComClient {
   replyStream(
@@ -32,11 +47,17 @@ export interface WeComClient {
     content: string,
     finish: boolean,
   ): Promise<unknown>;
+  replyTemplateCard(frame: WsFrameHeaders, templateCard: TemplateCard): Promise<unknown>;
+  updateTemplateCard(
+    frame: WsFrameHeaders,
+    templateCard: TemplateCard,
+    userids?: string[],
+  ): Promise<unknown>;
   sendMessage(chatId: string, body: unknown): Promise<unknown>;
   downloadFile(url: string, aesKey?: string): Promise<{ buffer: Buffer; filename?: string }>;
 }
 
-type WeComEvent = "message.text" | "message.mixed" | "error";
+type WeComEvent = "message.text" | "message.mixed" | "event.template_card_event" | "error";
 
 export interface EventedWeComClient extends WeComClient {
   on(event: WeComEvent, listener: (payload: unknown) => Promise<void> | void): this;
@@ -46,6 +67,7 @@ export interface EventedWeComClient extends WeComClient {
 
 type MessageController = {
   handle(message: IncomingBotMessage): Promise<HandleResult>;
+  handleProjectSelection(selection: IncomingProjectSelection): Promise<HandleResult>;
 };
 
 type GatewayLogger = {
@@ -174,11 +196,21 @@ function commonMessage(
     async reply(text) {
       await client.replyStream(frame, createStreamId(), text, true);
     },
+    async replyProjectSelection(selectionId, projects) {
+      await client.replyTemplateCard(frame, {
+        card_type: "button_interaction",
+        main_title: { title: "请选择要修改的项目" },
+        sub_title_text: "选择后会立即创建代码修改任务。",
+        button_list: projects.map((project) => ({
+          text: project.displayName,
+          key: project.projectId,
+          style: 1,
+        })),
+        task_id: selectionId,
+      });
+    },
     async notify(text) {
-      if (body.chatid === undefined) {
-        throw new Error("单聊消息没有 chatid，无法主动推送任务进度");
-      }
-      await client.sendMessage(body.chatid, {
+      await client.sendMessage(body.chatid ?? body.from.userid, {
         msgtype: "markdown",
         markdown: { content: text },
       });
@@ -275,6 +307,31 @@ export function startWeComGateway(options: StartWeComGatewayOptions): { stop(): 
       );
     } catch (error) {
       options.logger.error(error, "处理企微图文消息失败");
+    }
+  });
+  options.client.on("event.template_card_event", async (payload) => {
+    try {
+      const frame = payload as ProjectSelectionFrame;
+      const selectionId = frame.body.event.task_id;
+      const projectId = frame.body.event.event_key;
+      if (selectionId === undefined || projectId === undefined) {
+        throw new Error("企微项目选择事件缺少 task_id 或 event_key");
+      }
+      await options.controller.handleProjectSelection({
+        selectionId,
+        projectId,
+        userId: frame.body.from.userid,
+        ...(frame.body.chatid === undefined ? {} : { chatId: frame.body.chatid }),
+        async updateCard(text) {
+          await options.client.updateTemplateCard(frame, {
+            card_type: "text_notice",
+            main_title: { title: text },
+            task_id: selectionId,
+          }, [frame.body.from.userid]);
+        },
+      });
+    } catch (error) {
+      options.logger.error(error, "处理企微项目选择事件失败");
     }
   });
   options.client.on("error", (error) => {

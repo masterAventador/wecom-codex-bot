@@ -1,6 +1,6 @@
 # 企微 Codex 自动修复机器人
 
-这是一个只在本机运行的 TypeScript 服务。群成员在企业微信群里 `@机器人` 反馈问题后，服务会先按 `userid + chatid + projectId` 校验权限，再到预先登记的目标项目中创建独立 Git worktree，调用本机已登录的 Codex 修改代码、运行测试、构建 Electron 安装包，最后上传对象存储并把下载链接发回原群。
+这是一个只在本机运行的 TypeScript 服务。群成员在企业微信群里 `@机器人` 直接描述问题后，服务会按发送者、会话和项目权限校验，再到预先登记的目标项目中创建独立 Git worktree，调用本机已登录的 Codex 修改代码、运行测试、构建 Electron 安装包，最后上传对象存储并把下载链接发回原会话。
 
 一个机器人进程可以管理多个代码项目和多套权限组。服务只建立到企业微信的出站 WebSocket 长连接，不需要公网 IP、域名或回调服务器。
 
@@ -8,39 +8,39 @@
 
 - 使用企业微信智能机器人 WebSocket Node SDK 收发消息。
 - 使用项目注册表管理多个代码仓库，群消息不能传入任意电脑路径。
-- 按 `userid + chatid + projectId` 三者交集授权。
-- `/whoami` 返回当前 `userid` 和 `chatid`，不会触发代码任务。
-- `/projects` 只列出当前用户在当前群可以操作的项目。
-- `/fix <项目ID> <问题描述>` 明确选择目标项目；只有一个可用项目时也可直接发送问题。
+- 群聊按 `userid + chatid` 找到权限组，再将命中的项目权限取并集；私聊必须由权限组显式开启。
+- 群成员只需自然描述问题，不需要记忆或输入任何斜杠命令和项目 ID。
+- 只有一个可用项目时直接创建任务；有多个项目时回复企微选择卡片，按钮显示项目中文名称。
+- 卡片点击时再次校验点击者、群聊和项目权限，其他人不能代替发起者选择。
 - 支持引用企微中的文本、图片、图文、语音和文件消息后再 `@机器人`，引用内容会一并交给 Codex。
 - 每条消息到达时重新读取权限组配置，修改白名单不需要重启。
 - 相同 `msgid` 在当前进程内只执行一次，所有项目的任务统一串行排队。
 - 每个任务在目标仓库的 `wt/<任务编号>` 中创建独立 worktree 和 `bot/<任务编号>` 分支。
 - 通过当前 macOS 用户的 ChatGPT 登录调用本地 Codex，不需要 OpenAI API Key 或 API 代理。
-- 支持群内文字和图文混排反馈；附件只有通过三重授权后才下载，任务结束后自动删除。
+- 支持群内文字和图文混排反馈；附件只有通过完整权限校验后才下载，任务结束后自动删除。
 - Codex 修改完成后，由外层服务独立执行该项目配置的测试和 Electron 打包命令。
 - 支持腾讯云 COS 上传 115MB 等大安装包，并生成限时签名下载地址。
 - 可选择自动提交、自动推送任务分支；永远不会自动合并主分支。
 - 企微和 COS 密钥不会传入 Codex，也不会传给目标项目的安装、测试和构建命令。
 
-## 群内命令
+## 群聊和私聊用法
 
 ```text
-@机器人 /whoami
-@机器人 /projects
-@机器人 /fix desktop-client 修复登录按钮点击无反应
+@机器人 登录按钮点了没反应，控制台报错见截图
 ```
 
-- `/whoami`：任何人都能查看自己的 `userid` 和当前群的 `chatid`。
-- `/projects`：列出发送者在当前群有权操作的项目。
-- `/fix <项目ID> <问题描述>`：选择项目并创建修复任务。
-- 如果发送者在当前群只有一个可用项目，可以直接 `@机器人 修复登录按钮点击无反应`。
-- 如果有多个可用项目但没有指定，机器人只会提示选择，不会让 Codex 猜测代码目录。
+- 如果发送者在当前群只有一个可用项目，机器人会直接创建任务。
+- 如果有多个可用项目，机器人会回复项目选择卡片；点击“桌面客户端”“管理后台”等展示名称后才创建任务。
+- 项目选择卡片保留 5 分钟；超时或服务重启后需要重新描述问题。
+- 项目 ID 是本地配置中的稳定键，只供服务内部鉴权和定位仓库使用，群成员不需要知道它。
+- 群聊中企业微信只会把 `@机器人` 的消息交给机器人；后续没有再次 `@` 的补充消息通常收不到。可以把信息写在同一条消息中，或引用前一条消息后再次 `@机器人`。
+- 私聊机器人时，每条消息都能收到，不需要 `@`；但对应权限组必须设置 `allowDirectMessages: true`。
+- 斜杠文本没有特殊含义，例如 `/fix ...` 会被当成普通问题描述原样交给 Codex，不建议再使用。
 
 也可以先引用群里的报错、截图、语音或日志文件，再发送：
 
 ```text
-@机器人 /fix desktop-client 根据引用内容修复这个问题
+@机器人 根据引用内容修复这个问题
 ```
 
 引用文本和语音转写会进入问题上下文；引用图片会作为 Codex 图片附件；引用文件会在权限校验后下载到独立 worktree 的临时目录，Codex 完成或失败后都会在 Git 检查前删除。企微引用结构不包含原消息发送者信息，因此 Codex 能看到被引用的内容和类型，但看不到原发送者的姓名或 userid。
@@ -48,9 +48,11 @@
 ## 工作流程
 
 ```text
-群成员引用反馈消息，@机器人并选择 projectId
+群成员引用反馈消息并 @机器人，自然描述问题
         ↓
-userid + chatid + projectId 权限组校验
+userid + 群聊 chatid / 私聊开关权限校验
+        ↓
+单项目直接执行 / 多项目点击中文名称选择卡片
         ↓
 从项目注册表读取固定仓库路径和命令
         ↓
@@ -62,10 +64,10 @@ userid + chatid + projectId 权限组校验
         ↓
 Electron 构建 → Git 提交/可选推送
         ↓
-上传 COS → 企微群发送下载链接和修改摘要
+上传 COS → 原企微会话发送下载链接和修改摘要
 ```
 
-任何环节失败都会停止后续发布，并在群里返回失败阶段和错误摘要。失败任务的分支和 worktree 会保留，方便人工接管。
+任何环节失败都会停止后续发布，并在原会话返回失败阶段和错误摘要。失败任务的分支和 worktree 会保留，方便人工接管。
 
 ## 环境要求
 
@@ -94,27 +96,23 @@ cp config/local.example.json config/local.json
 
 ## 获取 userid 和 chatid
 
-企微智能机器人收到的每条消息都包含发送者的 `from.userid`，群消息还包含 `chatid`。可以从企微管理后台、通讯录接口或机器人收到的消息中取得；最方便的方式是在目标群发送：
+企微智能机器人收到的每条消息都包含发送者的 `from.userid`，群消息还包含 `chatid`，不需要专门设计 `/whoami` 命令。
 
-```text
-@机器人 /whoami
-```
+- `userid` 可以在企微管理后台通讯录的成员账号中查看，也可以通过通讯录 API 获取。
+- `chatid` 可以从智能机器人收到的群消息事件中取得。
+- 本服务也提供了无命令的引导方式：目标群尚未进入白名单时，任何人 `@机器人` 描述问题，拒绝消息会带出当前 `chatid`；把该群加入权限组后，未授权同事再次 `@机器人`，拒绝消息会带出他自己的 `userid`。
 
-机器人会回复：
-
-```text
-你的 userid：zhangsan
-当前 chatid：wrxxxxxxxx
-```
+把拿到的值填进 `allowedUserIds` 和 `allowedChatIds` 即可。机器人只回显当前发送者自己的 `userid`，不会查询或枚举公司通讯录。
 
 ## 登记多个项目
 
-编辑 `config/local.json` 的 `projects`。项目 ID 会暴露给群成员使用，建议采用简短稳定的英文标识：
+编辑 `config/local.json` 的 `projects`。`desktop-client` 这样的键就是你自己定义的 `projectId`，建议采用简短稳定的英文标识；`displayName` 是企微卡片和任务消息里给同事看的名称：
 
 ```json
 {
   "projects": {
     "desktop-client": {
+      "displayName": "桌面客户端",
       "path": "/Users/你的用户名/代码/electron-desktop-client",
       "baseBranch": "dev",
       "remote": "origin",
@@ -125,6 +123,7 @@ cp config/local.example.json config/local.json
       "artifactGlobs": ["release/*.dmg", "release/*.exe"]
     },
     "admin-console": {
+      "displayName": "管理后台",
       "path": "/Users/你的用户名/代码/electron-admin-console",
       "baseBranch": "main",
       "remote": "origin",
@@ -142,13 +141,14 @@ cp config/local.example.json config/local.json
 
 - `path` 必须是绝对路径。
 - 项目 ID 只能包含字母、数字、点、下划线和连字符，最长 64 个字符。
+- `displayName` 必填、不能重复，最长 30 个字符；修改它不会改变仓库定位或权限配置。
 - 安装、测试和构建命令必须写成参数数组，不经过 shell。
 - `artifactGlobs` 只能匹配工作区内部文件，不能使用绝对路径或 `..`。
 - 服务启动时会逐个确认登记目录是 Git 仓库。
 
 ## 配置权限组
 
-`permissionGroups` 可以配置任意多组权限。只有同一个权限组同时命中发送者 `userid`、当前群 `chatid` 和目标 `projectId` 时才授权：
+`permissionGroups` 可以配置任意多组权限。群聊需要同时命中发送者 `userid` 和当前群 `chatid`；私聊需要命中 `userid` 且该组明确设置 `allowDirectMessages: true`。最终只能选择命中权限组中登记的项目：
 
 ```json
 {
@@ -157,12 +157,14 @@ cp config/local.example.json config/local.json
       "name": "桌面端支持组",
       "allowedUserIds": ["zhangsan", "lisi"],
       "allowedChatIds": ["wr_weekend_feedback"],
+      "allowDirectMessages": false,
       "allowedProjectIds": ["desktop-client"]
     },
     {
       "name": "负责人全项目组",
       "allowedUserIds": ["owner"],
       "allowedChatIds": ["wr_weekend_feedback", "wr_development"],
+      "allowDirectMessages": true,
       "allowedProjectIds": ["desktop-client", "admin-console"]
     }
   ]
@@ -173,6 +175,8 @@ cp config/local.example.json config/local.json
 
 - 同一用户和群命中多个权限组时，可操作项目取这些权限组的并集。
 - 一个权限组里的用户列表和群列表是组合授权：列表中的任意用户都能在列表中的任意群操作该组项目。需要更严格组合时应拆成多个权限组。
+- `allowDirectMessages` 只控制该组用户能否私聊触发任务，不会放宽群聊的 `chatid` 校验；省略时默认为 `false`。
+- 同一用户在同一群或私聊中最终匹配的项目不能超过 6 个，这是企业微信按钮卡片的上限；超过时机器人会拒绝创建任务并提示调整权限组。
 - 权限组名称不能重复，`allowedProjectIds` 必须全部存在于 `projects`。
 - 权限组在每条消息到达时重新读取，保存配置后不用重启。
 - 新增或修改项目路径后建议重启服务，让启动前检查覆盖新仓库。
@@ -289,6 +293,7 @@ RUN_LOCAL_CODEX_E2E=1 node --experimental-strip-types --test test/local-codex-e2
 
 - 所有项目共用一个串行队列；一个任务完成后才会处理下一个任务。
 - `msgid` 去重保存在内存中，服务重启后会清空；Git 分支名仍会阻止同一任务被无声覆盖。
+- 未点击的项目选择状态只在内存中保留 5 分钟；服务重启后旧卡片也会失效。
 - 电脑休眠、关机或断网时机器人不可用。
 - Windows 安装包如果依赖原生模块，建议在 Windows 机器上构建和验收。
 - macOS 安装包仍需要正确配置 Developer ID 签名和公证；Windows 安装包建议配置代码签名证书。
@@ -297,7 +302,7 @@ RUN_LOCAL_CODEX_E2E=1 node --experimental-strip-types --test test/local-codex-e2
 
 ## 安全设计
 
-- 三重权限检查发生在引用图片/文件下载、Git、Codex、测试和构建之前。
+- 用户、会话和项目权限检查发生在引用图片/文件下载、Git、Codex、测试和构建之前；项目卡片点击时还会再次检查。
 - 项目仓库只能来自本地 `projects` 注册表，群成员不能指定文件系统路径或任意构建命令。
 - Codex 使用自动审批的 `workspace-write` 沙箱，不使用 `danger-full-access`。
 - 群反馈被包裹为“不可信问题描述”，不能覆盖外层工作要求。

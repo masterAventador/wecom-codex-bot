@@ -88,6 +88,7 @@ process.stdin.on("end", () => {
       const config: BotConfig = {
         projects: {
           "electron-sample": {
+            displayName: "Electron 示例项目",
             path: repositoryPath,
             baseBranch: "dev",
             remote: "origin",
@@ -102,6 +103,7 @@ process.stdin.on("end", () => {
           name: "端到端测试组",
           allowedUserIds: ["owner"],
           allowedChatIds: ["group"],
+          allowDirectMessages: false,
           allowedProjectIds: ["electron-sample"],
         }],
         codex: {
