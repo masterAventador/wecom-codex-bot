@@ -38,6 +38,49 @@ function fakeClient() {
 }
 
 describe("企微消息适配", () => {
+  it("未授权消息不回复企微，只在本机日志记录 userid 和 chatid", async () => {
+    const listeners = new Map<string, (payload: unknown) => Promise<void> | void>();
+    const infoLogs: unknown[][] = [];
+    const { client: base, calls } = fakeClient();
+    const client: EventedWeComClient = {
+      ...base,
+      on(event, listener) { listeners.set(event, listener); return this; },
+      connect() { return this; },
+      disconnect() {},
+    };
+    startWeComGateway({
+      client,
+      runtimeDirectory: "/tmp/runtime",
+      createStreamId: () => "stream",
+      controller: {
+        async handle() { return { kind: "denied" }; },
+        async handleProjectSelection() { return { kind: "expired" }; },
+      },
+      logger: {
+        info: (...values) => infoLogs.push(values),
+        error: () => undefined,
+      },
+    });
+
+    const listener = listeners.get("message.text");
+    assert.ok(listener);
+    await listener({
+      headers: { req_id: "req-denied" },
+      body: {
+        msgid: "msg-denied",
+        from: { userid: "unknown-user" },
+        chatid: "unknown-group",
+        text: { content: "介绍一下你自己" },
+      },
+    });
+
+    assert.equal(calls.length, 0);
+    assert.deepEqual(infoLogs, [[
+      { userId: "unknown-user", chatId: "unknown-group" },
+      "已静默忽略未授权企微消息",
+    ]]);
+  });
+
   it("启动时注册消息监听并连接，停止时主动断开", async () => {
     const listeners = new Map<string, (payload: unknown) => Promise<void> | void>();
     let connected = false;

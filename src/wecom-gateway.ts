@@ -76,6 +76,7 @@ type MessageController = {
 };
 
 type GatewayLogger = {
+  info?(...values: unknown[]): void;
   error(...values: unknown[]): void;
 };
 
@@ -285,9 +286,21 @@ type StartWeComGatewayOptions = {
 };
 
 export function startWeComGateway(options: StartWeComGatewayOptions): { stop(): void } {
+  const handleMessage = async (message: IncomingBotMessage) => {
+    const result = await options.controller.handle(message);
+    if (result.kind === "denied") {
+      options.logger.info?.(
+        {
+          userId: message.userId,
+          ...(message.chatId === undefined ? {} : { chatId: message.chatId }),
+        },
+        "已静默忽略未授权企微消息",
+      );
+    }
+  };
   options.client.on("message.text", async (payload) => {
     try {
-      await options.controller.handle(
+      await handleMessage(
         createIncomingTextMessage(
           options.client,
           options.runtimeDirectory,
@@ -301,7 +314,7 @@ export function startWeComGateway(options: StartWeComGatewayOptions): { stop(): 
   });
   options.client.on("message.mixed", async (payload) => {
     try {
-      await options.controller.handle(
+      await handleMessage(
         createIncomingMixedMessage(
           options.client,
           options.runtimeDirectory,

@@ -143,7 +143,7 @@ function codeSuccessResult(taskId: string, projectId = "desktop-client") {
 }
 
 describe("自然对话消息控制器", () => {
-  it("群聊未授权用户同时得到自己的 userid 和当前 chatid，不会创建任务", async () => {
+  it("群聊未授权用户被静默拒绝，不会创建任务", async () => {
     let workflowRuns = 0;
     const controller = new BotController({
       loadConfig: async () => config,
@@ -155,12 +155,13 @@ describe("自然对话消息控制器", () => {
     const result = await controller.handle(current.input);
 
     assert.equal(result.kind, "denied");
-    assert.match(current.replies[0] ?? "", /userid：visitor/u);
-    assert.match(current.replies[0] ?? "", /chatid：group-1/u);
+    assert.deepEqual(current.replies, []);
+    assert.deepEqual(current.notifications, []);
+    assert.deepEqual(current.cards, []);
     assert.equal(workflowRuns, 0);
   });
 
-  it("新群里的新用户首次触发时同时回显 userid 和 chatid", async () => {
+  it("新群里的新用户也被静默拒绝", async () => {
     const controller = new BotController({
       loadConfig: async () => config,
       createTaskId: () => "task-001",
@@ -171,11 +172,10 @@ describe("自然对话消息控制器", () => {
     const result = await controller.handle(current.input);
 
     assert.equal(result.kind, "denied");
-    assert.match(current.replies[0] ?? "", /userid：new-user/u);
-    assert.match(current.replies[0] ?? "", /chatid：new-group/u);
+    assert.deepEqual(current.replies, []);
   });
 
-  it("私聊未授权时只回显 userid", async () => {
+  it("私聊未授权用户同样被静默拒绝", async () => {
     const controller = new BotController({
       loadConfig: async () => config,
       createTaskId: () => "task-001",
@@ -186,8 +186,67 @@ describe("自然对话消息控制器", () => {
     const result = await controller.handle(current.input);
 
     assert.equal(result.kind, "denied");
-    assert.match(current.replies[0] ?? "", /userid：new-user/u);
-    assert.doesNotMatch(current.replies[0] ?? "", /chatid/u);
+    assert.deepEqual(current.replies, []);
+  });
+
+  it("授权用户的通用问题在项目选择前直接回答", async () => {
+    let workflowRuns = 0;
+    const routedPrompts: string[] = [];
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-001",
+      async routeConversation(prompt) {
+        routedPrompts.push(prompt);
+        return {
+          kind: "direct",
+          answer: "我是魏帅·代码机器人，可以为授权用户回答问题和处理代码。",
+        };
+      },
+      workflow: { run: async () => { workflowRuns += 1; throw new Error("不应执行"); } },
+    });
+    const current = message({ content: "介绍一下你自己" });
+
+    const result = await controller.handle(current.input);
+
+    assert.deepEqual(result, { kind: "answered" });
+    assert.deepEqual(routedPrompts, ["介绍一下你自己"]);
+    assert.deepEqual(current.replies, [
+      "我是魏帅·代码机器人，可以为授权用户回答问题和处理代码。",
+    ]);
+    assert.equal(current.cards.length, 0);
+    assert.equal(workflowRuns, 0);
+  });
+
+  it("通用分流确认需要仓库时才显示项目选择卡片", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-001",
+      routeConversation: async () => ({ kind: "project" }),
+      workflow: { run: async () => { throw new Error("不应执行"); } },
+    });
+    const current = message({ content: "这个项目的整体进度怎么样？" });
+
+    const result = await controller.handle(current.input);
+
+    assert.deepEqual(result, { kind: "project-selection", selectionId: "select_task-001" });
+    assert.equal(current.cards.length, 1);
+    assert.equal(current.replies.length, 0);
+  });
+
+  it("通用分流无法理解时直接追问，不创建项目任务", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-001",
+      routeConversation: async () => ({ kind: "clarify", question: "你希望我处理什么问题？" }),
+      workflow: { run: async () => { throw new Error("不应执行"); } },
+    });
+    const current = message({ content: "这个那个" });
+
+    const result = await controller.handle(current.input);
+
+    assert.deepEqual(result, { kind: "answered" });
+    assert.deepEqual(current.replies, ["你希望我处理什么问题？"]);
+    assert.equal(current.cards.length, 0);
   });
 
   it("只有一个授权项目时直接使用展示名称创建任务", async () => {
@@ -617,7 +676,7 @@ describe("自然对话消息控制器", () => {
     assert.match(current.notifications.at(-1) ?? "", /修复完成/);
   });
 
-  it("其他用户或其他会话不能点击别人的项目选择卡片", async () => {
+  it("其他用户或其他会话点击别人的项目卡片时静默拒绝", async () => {
     let workflowRuns = 0;
     const controller = new BotController({
       loadConfig: async () => config,
@@ -630,8 +689,8 @@ describe("自然对话消息控制器", () => {
 
     assert.equal((await controller.handleProjectSelection(otherUser.input)).kind, "denied");
     assert.equal((await controller.handleProjectSelection(otherChat.input)).kind, "denied");
-    assert.match(otherUser.updates[0] ?? "", /无权/);
-    assert.match(otherChat.updates[0] ?? "", /无权/);
+    assert.deepEqual(otherUser.updates, []);
+    assert.deepEqual(otherChat.updates, []);
     assert.equal(workflowRuns, 0);
   });
 

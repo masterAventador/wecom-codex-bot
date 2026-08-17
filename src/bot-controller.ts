@@ -2,6 +2,7 @@ import type { BotConfig } from "./config.ts";
 import { authorizeMessage, authorizeProjectSelection } from "./authorization.ts";
 import { classifyMessage } from "./message.ts";
 import { ClarificationNeededError } from "./issue-triage.ts";
+import type { ConversationRoute } from "./conversation-router.ts";
 import { SerialTaskQueue } from "./serial-task-queue.ts";
 import { createTaskDisplayName } from "./task-id.ts";
 import type { TaskWorkflowInput, TaskWorkflowResult } from "./task-workflow.ts";
@@ -41,6 +42,7 @@ type Workflow = {
 type BotControllerDependencies = {
   loadConfig(): Promise<BotConfig>;
   createTaskId(messageId: string): string;
+  routeConversation?(prompt: string): Promise<ConversationRoute>;
   summarizeTaskTitle?(prompt: string): Promise<string>;
   verboseProgress?: boolean;
   now?(): number;
@@ -49,6 +51,7 @@ type BotControllerDependencies = {
 
 export type HandleResult =
   | { kind: "project-selection"; selectionId: string }
+  | { kind: "answered" }
   | { kind: "denied" }
   | { kind: "expired" }
   | { kind: "ignored" }
@@ -172,18 +175,23 @@ export class BotController {
       return { kind: "ignored" };
     }
     if (decision.kind === "denied") {
-      if (decision.reason === "project") {
-        await message.reply(
-          `你无权操作项目 ${decision.projectId}。当前可用项目：${decision.allowedProjectIds.join("、")}`,
-        );
-      } else if (message.chatId !== undefined) {
-        await message.reply(
-          `当前群或用户不在白名单中。\n\nuserid：${message.userId}\nchatid：${message.chatId}`,
-        );
-      } else {
-        await message.reply(`当前私聊用户不在白名单中。userid：${message.userId}`);
-      }
       return { kind: "denied" };
+    }
+
+    let conversationRoute: ConversationRoute = { kind: "project" };
+    try {
+      conversationRoute = await this.#dependencies.routeConversation?.(decision.prompt)
+        ?? conversationRoute;
+    } catch {
+      conversationRoute = { kind: "project" };
+    }
+    if (conversationRoute.kind === "direct") {
+      await message.reply(conversationRoute.answer);
+      return { kind: "answered" };
+    }
+    if (conversationRoute.kind === "clarify") {
+      await message.reply(conversationRoute.question);
+      return { kind: "answered" };
     }
 
     const taskId = this.#dependencies.createTaskId(message.msgId);
@@ -248,7 +256,6 @@ export class BotController {
       pending.message.userId !== selection.userId
       || pending.message.chatId !== selection.chatId
     ) {
-      await selection.updateCard("无权操作：这张项目选择卡片不属于你或当前会话。");
       return { kind: "denied" };
     }
 

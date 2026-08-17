@@ -16,6 +16,7 @@ import { triageIssue } from "./issue-triage.ts";
 import { runPreflight } from "./preflight.ts";
 import { runCommand } from "./process-runner.ts";
 import { createArtifactPublisher } from "./publisher-factory.ts";
+import { routeConversation } from "./conversation-router.ts";
 import { createTaskId } from "./task-id.ts";
 import { generateTaskTitle } from "./task-title.ts";
 import { TaskWorkflow } from "./task-workflow.ts";
@@ -82,6 +83,12 @@ export async function startApplication(options: StartApplicationOptions): Promis
   const controller = new BotController({
     loadConfig: () => loadBotConfigFile(options.configPath),
     createTaskId: (messageId) => createTaskId(messageId),
+    routeConversation: (prompt) => routeConversation({
+      binary: initialConfig.codex.binary,
+      cwd: process.cwd(),
+      message: prompt,
+      timeoutMs: 60_000,
+    }),
     summarizeTaskTitle: (prompt) => generateTaskTitle({
       binary: initialConfig.codex.binary,
       cwd: process.cwd(),
