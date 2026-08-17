@@ -10,6 +10,15 @@ const config = {
     "admin-panel": { path: "/tmp/admin" },
   },
   codex: { binary: "/opt/homebrew/bin/codex" },
+  git: { mergeToBaseBranch: false },
+} as unknown as BotConfig;
+
+const mergeConfig = {
+  projects: {
+    demo: { path: "/tmp/demo", baseBranch: "dev" },
+  },
+  codex: { binary: "/opt/homebrew/bin/codex" },
+  git: { mergeToBaseBranch: true },
 } as unknown as BotConfig;
 
 describe("启动前检查", () => {
@@ -61,6 +70,39 @@ describe("启动前检查", () => {
           : "WARNING: PATH alias unavailable\nLogged in using ChatGPT\n",
         exitCode: 0,
       })),
+    );
+  });
+
+  it("自动合并开启时要求基础仓库检出目标分支", async () => {
+    await assert.rejects(
+      runPreflight(mergeConfig, async (options) => {
+        if (options.command.includes("--is-inside-work-tree")) {
+          return { stdout: "true\n", stderr: "", exitCode: 0 };
+        }
+        if (options.command.includes("--show-current")) {
+          return { stdout: "main\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      /demo.*必须检出 dev/,
+    );
+  });
+
+  it("自动合并开启时要求基础仓库没有未提交修改", async () => {
+    await assert.rejects(
+      runPreflight(mergeConfig, async (options) => {
+        if (options.command.includes("--is-inside-work-tree")) {
+          return { stdout: "true\n", stderr: "", exitCode: 0 };
+        }
+        if (options.command.includes("--show-current")) {
+          return { stdout: "dev\n", stderr: "", exitCode: 0 };
+        }
+        if (options.command.includes("--porcelain")) {
+          return { stdout: " M README.md\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      }),
+      /demo.*工作区不干净/,
     );
   });
 });

@@ -29,6 +29,7 @@ const projectSchema = z.object({
   testCommand: commandSchema,
   buildCommand: commandSchema.optional(),
   artifactGlobs: z.array(artifactGlobSchema).min(1).optional(),
+  deployCommand: commandSchema.optional(),
 }).superRefine((project, context) => {
   if (project.deliveryMode !== "artifact") {
     return;
@@ -93,6 +94,7 @@ const botConfigSchema = z.object({
     .object({
       commitChanges: z.boolean(),
       pushBranches: z.boolean(),
+      mergeToBaseBranch: z.boolean().default(false),
       branchPrefix: z.string().regex(/^[a-zA-Z0-9._-]+$/),
       authorName: z.string().min(1),
       authorEmail: z.string().regex(/^[^@\s]+@[^@\s]+$/, "git.authorEmail 格式不正确"),
@@ -100,6 +102,14 @@ const botConfigSchema = z.object({
     .refine((value) => !value.pushBranches || value.commitChanges, {
       path: ["pushBranches"],
       message: "git.pushBranches=true 时必须同时启用 git.commitChanges",
+    })
+    .refine((value) => !value.mergeToBaseBranch || value.commitChanges, {
+      path: ["mergeToBaseBranch"],
+      message: "git.mergeToBaseBranch=true 时必须同时启用 git.commitChanges",
+    })
+    .refine((value) => !value.mergeToBaseBranch || !value.pushBranches, {
+      path: ["mergeToBaseBranch"],
+      message: "自动合并并清理任务分支时不能同时启用 git.pushBranches",
     }),
   runtime: z.object({
     directory: z.string().min(1).refine(isAbsolute, "runtime.directory 必须是绝对路径"),

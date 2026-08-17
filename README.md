@@ -1,6 +1,6 @@
 # 企微 Codex 自动修复机器人
 
-这是一个只在本机运行的 TypeScript 服务。群成员在企业微信群里 `@机器人` 直接描述问题后，服务会按发送者、会话和项目权限校验，再到预先登记的目标项目中创建独立 Git worktree，调用本机已登录的 Codex 修改代码并运行测试。普通项目会保留本地任务分支并把结果发回原会话；Electron 项目还可以构建安装包、上传对象存储并返回下载链接。
+这是一个只在本机运行的 TypeScript 服务。群成员在企业微信群里 `@机器人` 直接描述问题后，服务会按发送者、会话和项目权限校验，再到预先登记的目标项目中创建独立 Git worktree，调用本机已登录的 Codex 修改代码并运行测试。默认只修改、测试和交付代码；只有消息明确要求打包或部署时，外层服务才会执行项目预先配置的对应命令。
 
 一个机器人进程可以管理多个代码项目和多套权限组。服务只建立到企业微信的出站 WebSocket 长连接，不需要公网 IP、域名或回调服务器。
 
@@ -19,9 +19,10 @@
 - 群内任务名称由只读 Codex 根据问题生成，格式为 `月日-十二字以内摘要`；内部 Git 安全编号不会作为群消息主标题。
 - 通过当前 macOS 用户的 ChatGPT 登录调用本地 Codex，不需要 OpenAI API Key 或 API 代理。
 - 支持群内文字和图文混排反馈；附件只有通过完整权限校验后才下载，任务结束后自动删除。
-- 每个项目可选择 `code` 或 `artifact` 交付模式；前者只测试并提交代码，后者额外构建和发布 Electron 安装包。
+- 每个项目可选择 `code` 或 `artifact` 能力；普通消息一律只交付代码，`artifact` 项目只有在消息明确要求“打包/出包”时才构建并发布 Electron 安装包。
+- 部署只响应明确的“部署/上线/发布”请求，并且只能执行项目预先登记的 `deployCommand`；没有配置时安全拒绝。
 - 支持腾讯云 COS 上传 115MB 等大安装包，并生成限时签名下载地址。
-- 可选择自动提交、自动推送任务分支；永远不会自动合并主分支。
+- 可选择成功后自动快进合并到预设基础分支；失败任务始终保留独立分支和 worktree。
 - 默认只发送入队回执和最终结果；最终群消息按本地姓名映射显示 `@姓名`，并隐藏详细原因和执行命令。
 - 企微和 COS 密钥不会传入 Codex，也不会传给目标项目的安装、测试和构建命令。
 
@@ -67,13 +68,14 @@ userid + 群聊 chatid / 私聊开关权限校验
         ↓
 可选安装依赖 → Codex 测试先行修改 → 外层测试
         ↓
-Git 提交/可选推送
+默认：Git 提交 → 快进合并基础分支 → 清理任务 worktree
         ↓
-code：发送分支、提交和修改摘要（不自动部署）
-artifact：Electron 构建 → 上传 COS → 发送下载链接和修改摘要
+明确要求打包：Electron 构建 → 上传 COS → 再合并
+明确要求部署：合并后执行项目预设 deployCommand
+未明确要求：绝不主动打包或部署
 ```
 
-任何环节失败都会停止后续发布，并在原会话返回失败阶段和错误摘要。失败任务的分支和 worktree 会保留，方便人工接管。
+任何合并前环节失败都会停止后续交付，并在原会话返回错误摘要；任务分支和 worktree 会保留，方便人工接管。部署发生在成功合并和清理之后，因此部署命令失败时消息会明确说明“代码已合并，但部署失败”。
 
 ## 环境要求
 
@@ -139,7 +141,8 @@ cp config/local.example.json config/local.json
       "installCommand": ["npm", "ci"],
       "testCommand": ["npm", "test"],
       "buildCommand": ["npm", "run", "dist"],
-      "artifactGlobs": ["release/*.dmg", "release/*.exe"]
+      "artifactGlobs": ["release/*.dmg", "release/*.exe"],
+      "deployCommand": ["./scripts/deploy.sh", "staging"]
     },
     "backend-service": {
       "displayName": "后端服务",
@@ -160,10 +163,11 @@ cp config/local.example.json config/local.json
 - `path` 必须是绝对路径。
 - 项目 ID 只能包含字母、数字、点、下划线和连字符，最长 64 个字符。
 - `displayName` 必填、不能重复，最长 30 个字符；修改它不会改变仓库定位或权限配置。
-- `deliveryMode` 可设为 `code` 或 `artifact`；旧配置省略时按 `artifact` 处理。
+- `deliveryMode` 可设为 `code` 或 `artifact`；它表示项目是否具备安装包能力，不代表每次任务都会打包。旧配置省略时按 `artifact` 处理。
 - `testCommand` 必填；`installCommand` 可省略；命令必须写成参数数组，不经过 shell。
-- `artifact` 项目必须配置 `buildCommand` 和 `artifactGlobs`；`artifactGlobs` 只能匹配工作区内部文件，不能使用绝对路径或 `..`。
-- `code` 项目测试通过后只保留任务分支，不生成安装包，也不会自动部署。
+- `artifact` 项目必须配置 `buildCommand` 和 `artifactGlobs`；只有群消息明确要求“打包/出包”才会使用。`artifactGlobs` 只能匹配工作区内部文件，不能使用绝对路径或 `..`。
+- `deployCommand` 可省略。只有明确要求“部署/上线/发布”、已配置固定命令且启用了 `git.mergeToBaseBranch` 时才会从基础仓库执行；消息文字不能改变命令参数。
+- “不要打包”“不用部署”“部署后报错”“打包失败”等否定或问题背景不会触发交付动作。未识别的说法安全降级为只修改代码。
 - 服务启动时会逐个确认登记目录是 Git 仓库。
 
 ## 配置权限组
@@ -206,7 +210,7 @@ cp config/local.example.json config/local.json
 
 ## 配置腾讯云 COS
 
-115MB Electron 安装包超过企微智能机器人 SDK 当前约 50MB 的媒体上传实现上限，因此 `artifact` 项目正式使用应选择 COS 模式。只有 `code` 项目时可保留本地 `filesystem` 配置，它不会被任务使用。
+115MB Electron 安装包超过企微智能机器人 SDK 当前约 50MB 的媒体上传实现上限，因此需要响应明确打包请求的 `artifact` 项目正式使用应选择 COS 模式。只有 `code` 项目时可保留本地 `filesystem` 配置，它不会被普通代码任务使用。
 
 在 `.env` 填写：
 
@@ -258,6 +262,7 @@ BOT_VERBOSE_PROGRESS=false
   "git": {
     "commitChanges": true,
     "pushBranches": false,
+    "mergeToBaseBranch": true,
     "branchPrefix": "bot",
     "authorName": "企微修复机器人",
     "authorEmail": "wecom-codex-bot@localhost"
@@ -265,10 +270,11 @@ BOT_VERBOSE_PROGRESS=false
 }
 ```
 
-- `pushBranches=false`：只保留本地任务分支，适合第一阶段验证。
+- `mergeToBaseBranch=true`：测试以及消息明确要求的构建、制品上传全部成功后，使用 `--ff-only` 合并回项目的 `baseBranch`，然后删除任务 worktree 和本地任务分支。启动服务时，基础仓库必须已检出该分支且工作区干净。
+- `mergeToBaseBranch=false`：保留本地任务分支和 worktree，便于人工检查。
 - `pushBranches=true`：项目门禁通过后推送到目标项目配置的远端，必须同时启用 `commitChanges`。
-- 服务不会自动合并 `dev`、`master` 或 `main`。
-- worktree 会保留在相应项目的 `wt/` 下，确认不再需要后可人工执行 `git worktree remove <路径>`。
+- `mergeToBaseBranch=true` 必须同时启用 `commitChanges`，且不能同时启用 `pushBranches`；当前只合并到本地，不会自动推送或部署。
+- 任务失败或无法快进合并时，会保留相应项目 `wt/` 下的 worktree 和任务分支，供人工排查。
 
 ## 启动与停止
 

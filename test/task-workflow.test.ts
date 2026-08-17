@@ -21,6 +21,7 @@ const config: BotConfig = {
       testCommand: ["npm", "test"],
       buildCommand: ["npm", "run", "dist"],
       artifactGlobs: ["release/*.dmg"],
+      deployCommand: ["./scripts/deploy.sh", "staging"],
     },
   },
   permissionGroups: [{
@@ -34,6 +35,7 @@ const config: BotConfig = {
   git: {
     commitChanges: true,
     pushBranches: false,
+    mergeToBaseBranch: false,
     branchPrefix: "bot",
     authorName: "企微修复机器人",
     authorEmail: "wecom-codex-bot@localhost",
@@ -113,7 +115,7 @@ describe("修复任务流水线", () => {
     const result = await workflow.run({
       taskId: "task-001",
       projectId: "desktop-client",
-      prompt: "修复启动白屏",
+      prompt: "修复启动白屏，改完后打个安装包",
       imagePaths: ["/tmp/screenshot.png"],
       filePaths: [],
       config,
@@ -131,7 +133,7 @@ describe("修复任务流水线", () => {
       ["npm", "test"],
       ["npm", "run", "dist"],
       ["git", "add", "-A"],
-      ["git", "commit", "-m", "fix(bot): 修复启动白屏"],
+      ["git", "commit", "-m", "fix(bot): 修复启动白屏，改完后打个安装包"],
       ["git", "rev-parse", "--short", "HEAD"],
     ]);
     assert.deepEqual(events, [
@@ -219,6 +221,188 @@ describe("修复任务流水线", () => {
       ["git", "rev-parse", "--short", "HEAD"],
     ]);
     assert.match(progress.at(-1) ?? "", /代码任务完成/);
+  });
+
+  it("配置了安装包能力的项目收到普通反馈时也只交付代码", async () => {
+    const commands: string[][] = [];
+    let artifactLookups = 0;
+    let publications = 0;
+    const workflow = new TaskWorkflow({
+      async prepareWorkspace(options) {
+        return { branchName: options.branchName, worktreePath: "/tmp/worktree" };
+      },
+      async runCommand(options) {
+        commands.push([...options.command]);
+        if (options.command[1] === "status") {
+          return { stdout: " M src/main.ts\n", stderr: "", exitCode: 0 };
+        }
+        if (options.command[1] === "rev-parse") {
+          return { stdout: "abc1234\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      async runCodex() { return { finalMessage: "已修复", stderr: "" }; },
+      async findArtifact() {
+        artifactLookups += 1;
+        throw new Error("普通反馈不应查找安装包");
+      },
+      publisher: {
+        async publish() {
+          publications += 1;
+          throw new Error("普通反馈不应发布安装包");
+        },
+      },
+    });
+
+    const result = await workflow.run({
+      taskId: "task-default-code",
+      projectId: "desktop-client",
+      prompt: "修复启动白屏",
+      imagePaths: [],
+      filePaths: [],
+      config,
+      onProgress: () => undefined,
+    });
+
+    assert.equal(result.deliveryMode, "code");
+    assert.equal(artifactLookups, 0);
+    assert.equal(publications, 0);
+    assert.equal(commands.some((value) => value.join(" ") === "npm run dist"), false);
+    assert.equal(commands.some((value) => value[0] === "./scripts/deploy.sh"), false);
+  });
+
+  it("成功后合并到基础分支并清理任务工作区", async () => {
+    const mergeConfig = structuredClone(config);
+    mergeConfig.git.mergeToBaseBranch = true;
+    const events: string[] = [];
+    const workflow = new TaskWorkflow({
+      async prepareWorkspace(options) {
+        return { branchName: options.branchName, worktreePath: "/tmp/worktree" };
+      },
+      async mergeWorkspace(options) {
+        events.push(`merge:${options.baseBranch}:${options.taskBranch}:${options.worktreePath}`);
+      },
+      async runCommand(options) {
+        if (options.command[1] === "status") {
+          return { stdout: " M src/main.ts\n", stderr: "", exitCode: 0 };
+        }
+        if (options.command[1] === "rev-parse") {
+          return { stdout: "abc1234\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      async runCodex() { return { finalMessage: "已完成", stderr: "" }; },
+      async findArtifact() { return "/tmp/App.dmg"; },
+      publisher: {
+        async publish() {
+          events.push("publish");
+          return publishedArtifact;
+        },
+      },
+    });
+    const progress: string[] = [];
+
+    const result = await workflow.run({
+      taskId: "task-merge",
+      projectId: "desktop-client",
+      prompt: "修复问题，完成后打包一下",
+      imagePaths: [],
+      filePaths: [],
+      config: mergeConfig,
+      onProgress: (message) => progress.push(message),
+    });
+
+    assert.equal(result.mergedToBaseBranch, "dev");
+    assert.deepEqual(events, [
+      "publish",
+      "merge:dev:bot/task-merge:/tmp/worktree",
+    ]);
+    assert.match(progress.at(-1) ?? "", /已合并到 dev.*清理/);
+  });
+
+  it("明确要求部署时先合并，再执行项目预设部署命令", async () => {
+    const deployConfig = structuredClone(config);
+    deployConfig.git.mergeToBaseBranch = true;
+    const events: string[] = [];
+    const workflow = new TaskWorkflow({
+      async prepareWorkspace(options) {
+        return { branchName: options.branchName, worktreePath: "/tmp/worktree" };
+      },
+      async mergeWorkspace() { events.push("merge"); },
+      async runCommand(options) {
+        if (options.command[1] === "status") {
+          return { stdout: " M src/main.ts\n", stderr: "", exitCode: 0 };
+        }
+        if (options.command[1] === "rev-parse") {
+          return { stdout: "abc1234\n", stderr: "", exitCode: 0 };
+        }
+        if (options.command[0] === "./scripts/deploy.sh") {
+          events.push(`deploy:${options.cwd}:${options.command.join(" ")}`);
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      async runCodex() { return { finalMessage: "已完成", stderr: "" }; },
+      async findArtifact() { throw new Error("未要求打包"); },
+      publisher: { async publish() { throw new Error("未要求打包"); } },
+    });
+
+    const result = await workflow.run({
+      taskId: "task-deploy",
+      projectId: "desktop-client",
+      prompt: "修复接口后帮我部署一下",
+      imagePaths: [],
+      filePaths: [],
+      config: deployConfig,
+      onProgress: () => undefined,
+    });
+
+    assert.equal(result.deliveryMode, "code");
+    assert.equal(result.deployed, true);
+    assert.deepEqual(events, [
+      "merge",
+      "deploy:/tmp/repository:./scripts/deploy.sh staging",
+    ]);
+  });
+
+  it("明确只要求打包时即使没有代码改动也可以生成制品", async () => {
+    const commands: string[][] = [];
+    let codexCalls = 0;
+    const workflow = new TaskWorkflow({
+      async prepareWorkspace(options) {
+        return { branchName: options.branchName, worktreePath: "/tmp/worktree" };
+      },
+      async runCommand(options) {
+        commands.push([...options.command]);
+        if (options.command[1] === "status") {
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        if (options.command[1] === "rev-parse") {
+          return { stdout: "abc1234\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      async runCodex() {
+        codexCalls += 1;
+        throw new Error("纯打包任务不应调用 Codex 修改代码");
+      },
+      async findArtifact() { return "/tmp/App.dmg"; },
+      publisher: { async publish() { return publishedArtifact; } },
+    });
+
+    const result = await workflow.run({
+      taskId: "task-package-only",
+      projectId: "desktop-client",
+      prompt: "打个安装包",
+      imagePaths: [],
+      filePaths: [],
+      config,
+      onProgress: () => undefined,
+    });
+
+    assert.equal(result.deliveryMode, "artifact");
+    assert.equal(codexCalls, 0);
+    assert.equal(commands.some((value) => value[1] === "commit"), false);
+    assert.equal(commands.some((value) => value.join(" ") === "npm run dist"), true);
   });
 
   it("测试失败时不构建也不发布", async () => {

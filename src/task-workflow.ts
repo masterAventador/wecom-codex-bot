@@ -6,6 +6,7 @@ import { buildCodexPrompt, type CodexRunResult, type RunCodexOptions } from "./c
 import type { BotConfig } from "./config.ts";
 import type { GitWorkspace } from "./git-workspace.ts";
 import type { CommandResult, RunCommandOptions } from "./process-runner.ts";
+import { detectTaskActions } from "./task-actions.ts";
 
 type PrepareWorkspaceOptions = {
   repositoryPath: string;
@@ -16,8 +17,16 @@ type PrepareWorkspaceOptions = {
   worktreeName: string;
 };
 
+type MergeWorkspaceOptions = {
+  repositoryPath: string;
+  baseBranch: string;
+  taskBranch: string;
+  worktreePath: string;
+};
+
 type TaskWorkflowDependencies = {
   prepareWorkspace(options: PrepareWorkspaceOptions): Promise<GitWorkspace>;
+  mergeWorkspace?(options: MergeWorkspaceOptions): Promise<void>;
   runCommand(options: RunCommandOptions): Promise<CommandResult>;
   runCodex(options: RunCodexOptions): Promise<CodexRunResult>;
   findArtifact(worktreePath: string, artifactGlobs: readonly string[]): Promise<string>;
@@ -40,6 +49,8 @@ type TaskWorkflowResultBase = {
   branchName: string;
   commitHash: string;
   codexSummary: string;
+  mergedToBaseBranch?: string;
+  deployed?: true;
 };
 
 export type TaskWorkflowResult = TaskWorkflowResultBase & (
@@ -134,6 +145,23 @@ export class TaskWorkflow {
     if (project === undefined) {
       throw new Error(`项目未登记：${input.projectId}`);
     }
+    const actions = detectTaskActions(input.prompt);
+    if (
+      actions.packageArtifact
+      && (
+        project.deliveryMode !== "artifact"
+        || project.buildCommand === undefined
+        || project.artifactGlobs === undefined
+      )
+    ) {
+      throw new Error(`项目 ${project.displayName} 未配置安装包构建能力`);
+    }
+    if (actions.deploy && project.deployCommand === undefined) {
+      throw new Error(`项目 ${project.displayName} 未配置部署命令，不会让 Codex 猜测部署方式`);
+    }
+    if (actions.deploy && !config.git.mergeToBaseBranch) {
+      throw new Error("部署任务要求先启用 git.mergeToBaseBranch，确保只从基础分支部署");
+    }
     const branchName = `${config.git.branchPrefix}/${input.taskId}`;
     input.onProgress("正在创建独立 Git 工作区");
     const workspace = await this.#dependencies.prepareWorkspace({
@@ -156,24 +184,31 @@ export class TaskWorkflow {
       });
     }
 
-    const quotedFiles = await stageQuotedFiles(
-      workspace.worktreePath,
-      input.taskId,
-      input.filePaths,
-    );
     let codexResult: CodexRunResult;
-    try {
-      input.onProgress("Codex 正在分析和修改代码");
-      codexResult = await this.#dependencies.runCodex({
-        binary: config.codex.binary,
-        cwd: workspace.worktreePath,
-        prompt: buildCodexPrompt(input.prompt, quotedFiles.relativePaths),
-        timeoutMs: config.codex.timeoutMinutes * 60_000,
-        imagePaths: input.imagePaths,
-        onProgress: input.onProgress,
-      });
-    } finally {
-      await quotedFiles.cleanup();
+    if (actions.codeChange) {
+      const quotedFiles = await stageQuotedFiles(
+        workspace.worktreePath,
+        input.taskId,
+        input.filePaths,
+      );
+      try {
+        input.onProgress("Codex 正在分析和修改代码");
+        codexResult = await this.#dependencies.runCodex({
+          binary: config.codex.binary,
+          cwd: workspace.worktreePath,
+          prompt: buildCodexPrompt(input.prompt, quotedFiles.relativePaths),
+          timeoutMs: config.codex.timeoutMinutes * 60_000,
+          imagePaths: input.imagePaths,
+          onProgress: input.onProgress,
+        });
+      } finally {
+        await quotedFiles.cleanup();
+      }
+    } else {
+      codexResult = {
+        finalMessage: "未要求修改代码，仅执行消息中明确要求的交付动作。",
+        stderr: "",
+      };
     }
 
     const status = await this.#dependencies.runCommand({
@@ -182,11 +217,12 @@ export class TaskWorkflow {
       timeoutMs: 30_000,
       env: projectEnvironment,
     });
-    if (status.stdout.trim().length === 0) {
+    const hasChanges = status.stdout.trim().length > 0;
+    if (!hasChanges && actions.codeChange) {
       throw new Error("Codex 没有产生代码改动，任务已停止");
     }
 
-    input.onProgress("代码已修改，正在运行测试");
+    input.onProgress(hasChanges ? "代码已修改，正在运行测试" : "正在运行项目测试");
     await this.#dependencies.runCommand({
       command: command(project.testCommand),
       cwd: workspace.worktreePath,
@@ -195,7 +231,7 @@ export class TaskWorkflow {
     });
 
     let artifactPath: string | undefined;
-    if (project.deliveryMode === "artifact") {
+    if (actions.packageArtifact) {
       if (project.buildCommand === undefined || project.artifactGlobs === undefined) {
         throw new Error("安装包交付项目缺少构建配置");
       }
@@ -212,7 +248,7 @@ export class TaskWorkflow {
       );
     }
 
-    if (config.git.commitChanges) {
+    if (config.git.commitChanges && hasChanges) {
       const gitEnvironment = {
         ...projectEnvironment,
         GIT_AUTHOR_NAME: config.git.authorName,
@@ -250,27 +286,67 @@ export class TaskWorkflow {
       env: projectEnvironment,
     });
 
-    const result = {
+    const result: TaskWorkflowResultBase = {
       taskId: input.taskId,
       projectId: input.projectId,
       branchName,
       commitHash: commit.stdout.trim(),
       codexSummary: codexResult.finalMessage,
     };
-    if (project.deliveryMode === "code") {
+    let artifact: PublishedArtifact | undefined;
+    if (actions.packageArtifact) {
+      if (artifactPath === undefined) {
+        throw new Error("安装包交付项目没有生成安装包");
+      }
+      input.onProgress("构建完成，正在上传安装包");
+      artifact = await this.#dependencies.publisher.publish(artifactPath, input.taskId);
+    }
+
+    if (config.git.mergeToBaseBranch) {
+      if (this.#dependencies.mergeWorkspace === undefined) {
+        throw new Error("自动合并已开启，但未配置 Git 合并器");
+      }
+      input.onProgress(`交付检查通过，正在合并到 ${project.baseBranch}`);
+      await this.#dependencies.mergeWorkspace({
+        repositoryPath: project.path,
+        baseBranch: project.baseBranch,
+        taskBranch: branchName,
+        worktreePath: workspace.worktreePath,
+      });
+      result.mergedToBaseBranch = project.baseBranch;
+      input.onProgress(`已合并到 ${project.baseBranch}，任务分支和 worktree 已清理`);
+    }
+
+    if (actions.deploy) {
+      if (project.deployCommand === undefined) {
+        throw new Error(`项目 ${project.displayName} 未配置部署命令`);
+      }
+      input.onProgress(`正在从 ${project.baseBranch} 执行项目预设部署命令`);
+      try {
+        await this.#dependencies.runCommand({
+          command: command(project.deployCommand),
+          cwd: project.path,
+          timeoutMs: BUILD_TIMEOUT_MS,
+          env: projectEnvironment,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`代码已合并到 ${project.baseBranch}，但部署失败：${message}`);
+      }
+      result.deployed = true;
+      input.onProgress("部署命令执行完成，正在发送结果");
+    } else if (!config.git.mergeToBaseBranch && !actions.packageArtifact) {
       input.onProgress("代码任务完成，正在发送结果");
+    } else if (!config.git.mergeToBaseBranch) {
+      input.onProgress("安装包已上传，正在发送结果");
+    }
+
+    if (!actions.packageArtifact) {
       return { ...result, deliveryMode: "code" };
     }
-    if (artifactPath === undefined) {
-      throw new Error("安装包交付项目没有生成安装包");
+    if (artifact === undefined) {
+      throw new Error("安装包交付项目没有发布安装包");
     }
-    input.onProgress("构建完成，正在上传安装包");
-    const artifact = await this.#dependencies.publisher.publish(artifactPath, input.taskId);
-    input.onProgress("安装包已上传，正在发送结果");
-    return {
-      ...result,
-      deliveryMode: "artifact",
-      artifact,
-    };
+    return { ...result, deliveryMode: "artifact", artifact };
   }
 }

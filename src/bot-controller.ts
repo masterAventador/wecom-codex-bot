@@ -90,13 +90,22 @@ function successMessage(
   taskDisplayName: string,
 ): string {
   const summary = visibleCodexSummary(result.codexSummary);
+  const gitResult = result.mergedToBaseBranch === undefined
+    ? `- 分支：${result.branchName}\n- 提交：${result.commitHash}`
+    : `- 已合并：${result.mergedToBaseBranch}\n- 提交：${result.commitHash}\n- 清理：任务分支和 worktree 已删除`;
+  const deployResult = result.deployed === true
+    ? "\n- 部署：已按项目预设命令完成"
+    : "";
   if (result.deliveryMode === "code") {
     return `## 代码修改完成：${taskDisplayName}
 
 - 项目：${projectDisplayName}
-- 分支：${result.branchName}
-- 提交：${result.commitHash}
-- 交付状态：代码已保存在本地任务分支，未自动部署
+${gitResult}
+- 交付状态：${result.deployed === true
+    ? "代码已合并到本地基础分支，并已完成明确请求的部署"
+    : result.mergedToBaseBranch === undefined
+      ? "代码已保存在本地任务分支，未自动部署"
+      : "代码已合并到本地基础分支，未自动部署"}${deployResult}
 
 ${summary}`;
   }
@@ -104,10 +113,10 @@ ${summary}`;
   return `## 修复完成：${taskDisplayName}
 
 - 项目：${projectDisplayName}
-- 分支：${result.branchName}
-- 提交：${result.commitHash}
+${gitResult}
 - 安装包：${result.artifact.filename}（${sizeMb} MB）
 - SHA-256：${result.artifact.sha256}
+${deployResult}
 
 [下载安装包](${result.artifact.downloadUrl})
 

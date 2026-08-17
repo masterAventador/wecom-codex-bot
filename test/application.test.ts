@@ -34,6 +34,7 @@ const config = {
   git: {
     commitChanges: true,
     pushBranches: false,
+    mergeToBaseBranch: false,
     branchPrefix: "bot",
     authorName: "企微修复机器人",
     authorEmail: "wecom-codex-bot@localhost",

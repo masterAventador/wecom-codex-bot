@@ -17,6 +17,26 @@ export async function runPreflight(
     if (gitResult.stdout.trim() !== "true") {
       throw new Error(`目标项目 ${projectId} 不是 Git 仓库：${project.path}`);
     }
+    if (config.git.mergeToBaseBranch) {
+      const branch = await runner({
+        command: ["git", "branch", "--show-current"],
+        cwd: project.path,
+        timeoutMs: 30_000,
+      });
+      if (branch.stdout.trim() !== project.baseBranch) {
+        throw new Error(
+          `目标项目 ${projectId} 的基础仓库必须检出 ${project.baseBranch}，当前是 ${branch.stdout.trim() || "游离 HEAD"}`,
+        );
+      }
+      const status = await runner({
+        command: ["git", "status", "--porcelain"],
+        cwd: project.path,
+        timeoutMs: 30_000,
+      });
+      if (status.stdout.trim().length > 0) {
+        throw new Error(`目标项目 ${projectId} 的基础仓库工作区不干净，无法启用自动合并`);
+      }
+    }
   }
 
   const firstProject = projects[0]?.[1];

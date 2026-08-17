@@ -11,7 +11,7 @@ import {
   type BotConfig,
   type RuntimeSecrets,
 } from "./config.ts";
-import { prepareGitWorkspace } from "./git-workspace.ts";
+import { mergeGitWorkspace, prepareGitWorkspace } from "./git-workspace.ts";
 import { runPreflight } from "./preflight.ts";
 import { runCommand } from "./process-runner.ts";
 import { createArtifactPublisher } from "./publisher-factory.ts";
@@ -71,6 +71,7 @@ export async function startApplication(options: StartApplicationOptions): Promis
   const publisher = dependencies.createPublisher(initialConfig, secrets);
   const workflow = new TaskWorkflow({
     prepareWorkspace: prepareGitWorkspace,
+    mergeWorkspace: mergeGitWorkspace,
     runCommand,
     runCodex,
     findArtifact: findNewestArtifact,

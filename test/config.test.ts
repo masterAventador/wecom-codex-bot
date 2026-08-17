@@ -58,6 +58,7 @@ const validConfig = {
   git: {
     commitChanges: true,
     pushBranches: false,
+    mergeToBaseBranch: false,
     branchPrefix: "bot",
     authorName: "企微修复机器人",
     authorEmail: "wecom-codex-bot@localhost",
@@ -241,6 +242,38 @@ describe("机器人配置", () => {
           git: { ...validConfig.git, commitChanges: false, pushBranches: true },
         }),
       /pushBranches/,
+    );
+  });
+
+  it("自动合并要求提交开启且不能同时推送临时任务分支", () => {
+    assert.equal(
+      parseBotConfig({
+        ...validConfig,
+        git: { ...validConfig.git, mergeToBaseBranch: true },
+      }).git.mergeToBaseBranch,
+      true,
+    );
+    assert.throws(
+      () => parseBotConfig({
+        ...validConfig,
+        git: {
+          ...validConfig.git,
+          commitChanges: false,
+          mergeToBaseBranch: true,
+        },
+      }),
+      /mergeToBaseBranch/,
+    );
+    assert.throws(
+      () => parseBotConfig({
+        ...validConfig,
+        git: {
+          ...validConfig.git,
+          pushBranches: true,
+          mergeToBaseBranch: true,
+        },
+      }),
+      /mergeToBaseBranch|pushBranches/,
     );
   });
 

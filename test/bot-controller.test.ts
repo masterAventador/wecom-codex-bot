@@ -46,6 +46,7 @@ const config: BotConfig = {
   git: {
     commitChanges: true,
     pushBranches: false,
+    mergeToBaseBranch: false,
     branchPrefix: "bot",
     authorName: "企微修复机器人",
     authorEmail: "wecom-codex-bot@localhost",
@@ -216,6 +217,55 @@ describe("自然对话消息控制器", () => {
     assert.match(notification, /提交：def5678/);
     assert.match(notification, /未自动部署/);
     assert.doesNotMatch(notification, /安装包|下载/);
+  });
+
+  it("自动合并后回复 dev 和清理结果，不再显示已删除的任务分支", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-merged",
+      summarizeTaskTitle: async () => "修复登录按钮",
+      workflow: {
+        async run(input) {
+          return {
+            ...codeSuccessResult(input.taskId, input.projectId),
+            mergedToBaseBranch: "dev",
+          };
+        },
+      },
+    });
+    const current = message({ userId: "tester" });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("合并任务未入队");
+    await result.completion;
+
+    const notification = current.notifications.at(-1) ?? "";
+    assert.match(notification, /已合并：dev/);
+    assert.match(notification, /任务分支和 worktree 已删除/);
+    assert.doesNotMatch(notification, /分支：bot\/task-code/);
+  });
+
+  it("部署完成后在最终消息中明确显示部署结果", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-deployed",
+      workflow: {
+        async run(input) {
+          return {
+            ...codeSuccessResult(input.taskId, input.projectId),
+            mergedToBaseBranch: "dev",
+            deployed: true,
+          };
+        },
+      },
+    });
+    const current = message({ userId: "tester", content: "修好后部署一下" });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("部署任务未入队");
+    await result.completion;
+
+    assert.match(current.notifications.at(-1) ?? "", /部署：已按项目预设命令完成/);
   });
 
   it("默认不向企微发送任务执行过程，只保留入队和最终结果", async () => {

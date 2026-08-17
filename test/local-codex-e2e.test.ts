@@ -114,6 +114,7 @@ process.stdin.on("end", () => {
         git: {
           commitChanges: true,
           pushBranches: false,
+          mergeToBaseBranch: false,
           branchPrefix: "bot",
           authorName: "企微修复机器人",
           authorEmail: "wecom-codex-bot@localhost",
@@ -141,7 +142,7 @@ process.stdin.on("end", () => {
       const result = await workflow.run({
         taskId: "e2e-task",
         projectId: "electron-sample",
-        prompt: "sum 函数错误地做了减法，请修复为加法，确保现有回归测试通过。",
+        prompt: "sum 函数错误地做了减法，请修复为加法，确保现有回归测试通过，完成后打个安装包。",
         imagePaths: [],
         filePaths: [],
         config,

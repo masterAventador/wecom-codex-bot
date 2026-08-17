@@ -1,5 +1,5 @@
 import { appendFile, mkdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { runCommand } from "./process-runner.ts";
 
@@ -10,6 +10,13 @@ type PrepareGitWorkspaceOptions = {
   fetchBeforeTask: boolean;
   branchName: string;
   worktreeName: string;
+};
+
+type MergeGitWorkspaceOptions = {
+  repositoryPath: string;
+  baseBranch: string;
+  taskBranch: string;
+  worktreePath: string;
 };
 
 export type GitWorkspace = {
@@ -62,4 +69,74 @@ export async function prepareGitWorkspace(
   });
 
   return { branchName: options.branchName, worktreePath };
+}
+
+function assertTaskWorktreePath(repositoryPath: string, worktreePath: string): void {
+  const worktreeRoot = resolve(repositoryPath, "wt");
+  const candidate = resolve(worktreePath);
+  const relativePath = relative(worktreeRoot, candidate);
+  if (
+    relativePath.length === 0
+    || relativePath === ".."
+    || relativePath.startsWith(`..${sep}`)
+    || isAbsolute(relativePath)
+  ) {
+    throw new Error(`拒绝清理不在项目 wt 目录内的路径：${worktreePath}`);
+  }
+}
+
+export async function mergeGitWorkspace(options: MergeGitWorkspaceOptions): Promise<void> {
+  assertTaskWorktreePath(options.repositoryPath, options.worktreePath);
+
+  const baseBranch = await runCommand({
+    command: ["git", "branch", "--show-current"],
+    cwd: options.repositoryPath,
+    timeoutMs: 30_000,
+  });
+  if (baseBranch.stdout.trim() !== options.baseBranch) {
+    throw new Error(`基础仓库必须检出 ${options.baseBranch}，当前是 ${baseBranch.stdout.trim() || "游离 HEAD"}`);
+  }
+
+  const baseStatus = await runCommand({
+    command: ["git", "status", "--porcelain"],
+    cwd: options.repositoryPath,
+    timeoutMs: 30_000,
+  });
+  if (baseStatus.stdout.trim().length > 0) {
+    throw new Error(`基础仓库工作区不干净，无法合并到 ${options.baseBranch}`);
+  }
+
+  const taskBranch = await runCommand({
+    command: ["git", "branch", "--show-current"],
+    cwd: options.worktreePath,
+    timeoutMs: 30_000,
+  });
+  if (taskBranch.stdout.trim() !== options.taskBranch) {
+    throw new Error(`任务 worktree 分支不匹配：预期 ${options.taskBranch}，实际 ${taskBranch.stdout.trim() || "游离 HEAD"}`);
+  }
+
+  const taskStatus = await runCommand({
+    command: ["git", "status", "--porcelain"],
+    cwd: options.worktreePath,
+    timeoutMs: 30_000,
+  });
+  if (taskStatus.stdout.trim().length > 0) {
+    throw new Error(`任务分支 ${options.taskBranch} 仍有未提交修改，已保留 worktree`);
+  }
+
+  await runCommand({
+    command: ["git", "merge", "--ff-only", options.taskBranch],
+    cwd: options.repositoryPath,
+    timeoutMs: 120_000,
+  });
+  await runCommand({
+    command: ["git", "worktree", "remove", "--force", resolve(options.worktreePath)],
+    cwd: options.repositoryPath,
+    timeoutMs: 120_000,
+  });
+  await runCommand({
+    command: ["git", "branch", "-d", options.taskBranch],
+    cwd: options.repositoryPath,
+    timeoutMs: 30_000,
+  });
 }
