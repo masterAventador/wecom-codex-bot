@@ -73,6 +73,16 @@ const MAX_PROJECT_CARD_CHOICES = 6;
 const PROJECT_SELECTION_TTL_MS = 5 * 60 * 1_000;
 
 function successMessage(result: TaskWorkflowResult, projectDisplayName: string): string {
+  if (result.deliveryMode === "code") {
+    return `## 代码修改完成：${result.taskId}
+
+- 项目：${projectDisplayName}
+- 分支：${result.branchName}
+- 提交：${result.commitHash}
+- 交付状态：代码已保存在本地任务分支，未自动部署
+
+${result.codexSummary}`;
+  }
   const sizeMb = (result.artifact.sizeBytes / 1024 / 1024).toFixed(1);
   return `## 修复完成：${result.taskId}
 

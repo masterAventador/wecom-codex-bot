@@ -24,10 +24,29 @@ const projectSchema = z.object({
   baseBranch: z.string().min(1),
   remote: z.string().min(1),
   fetchBeforeTask: z.boolean(),
-  installCommand: commandSchema,
+  deliveryMode: z.enum(["code", "artifact"]).default("artifact"),
+  installCommand: commandSchema.optional(),
   testCommand: commandSchema,
-  buildCommand: commandSchema,
-  artifactGlobs: z.array(artifactGlobSchema).min(1),
+  buildCommand: commandSchema.optional(),
+  artifactGlobs: z.array(artifactGlobSchema).min(1).optional(),
+}).superRefine((project, context) => {
+  if (project.deliveryMode !== "artifact") {
+    return;
+  }
+  if (project.buildCommand === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["buildCommand"],
+      message: "安装包交付项目必须配置 buildCommand",
+    });
+  }
+  if (project.artifactGlobs === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["artifactGlobs"],
+      message: "安装包交付项目必须配置 artifactGlobs",
+    });
+  }
 });
 
 const permissionGroupSchema = z.object({

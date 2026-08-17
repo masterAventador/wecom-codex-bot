@@ -34,14 +34,18 @@ export type TaskWorkflowInput = {
   onProgress(message: string): void;
 };
 
-export type TaskWorkflowResult = {
+type TaskWorkflowResultBase = {
   taskId: string;
   projectId: string;
   branchName: string;
   commitHash: string;
   codexSummary: string;
-  artifact: PublishedArtifact;
 };
+
+export type TaskWorkflowResult = TaskWorkflowResultBase & (
+  | { deliveryMode: "code" }
+  | { deliveryMode: "artifact"; artifact: PublishedArtifact }
+);
 
 const BOT_SECRET_KEYS = new Set(["WECOM_BOT_SECRET", "COS_SECRET_ID", "COS_SECRET_KEY"]);
 const INSTALL_TIMEOUT_MS = 20 * 60_000;
@@ -142,13 +146,15 @@ export class TaskWorkflow {
     });
     const projectEnvironment = createSafeProjectEnvironment(process.env);
 
-    input.onProgress("正在安装项目依赖");
-    await this.#dependencies.runCommand({
-      command: command(project.installCommand),
-      cwd: workspace.worktreePath,
-      timeoutMs: INSTALL_TIMEOUT_MS,
-      env: projectEnvironment,
-    });
+    if (project.installCommand !== undefined) {
+      input.onProgress("正在安装项目依赖");
+      await this.#dependencies.runCommand({
+        command: command(project.installCommand),
+        cwd: workspace.worktreePath,
+        timeoutMs: INSTALL_TIMEOUT_MS,
+        env: projectEnvironment,
+      });
+    }
 
     const quotedFiles = await stageQuotedFiles(
       workspace.worktreePath,
@@ -188,17 +194,23 @@ export class TaskWorkflow {
       env: projectEnvironment,
     });
 
-    input.onProgress("测试通过，正在构建 Electron 安装包");
-    await this.#dependencies.runCommand({
-      command: command(project.buildCommand),
-      cwd: workspace.worktreePath,
-      timeoutMs: BUILD_TIMEOUT_MS,
-      env: projectEnvironment,
-    });
-    const artifactPath = await this.#dependencies.findArtifact(
-      workspace.worktreePath,
-      project.artifactGlobs,
-    );
+    let artifactPath: string | undefined;
+    if (project.deliveryMode === "artifact") {
+      if (project.buildCommand === undefined || project.artifactGlobs === undefined) {
+        throw new Error("安装包交付项目缺少构建配置");
+      }
+      input.onProgress("测试通过，正在构建 Electron 安装包");
+      await this.#dependencies.runCommand({
+        command: command(project.buildCommand),
+        cwd: workspace.worktreePath,
+        timeoutMs: BUILD_TIMEOUT_MS,
+        env: projectEnvironment,
+      });
+      artifactPath = await this.#dependencies.findArtifact(
+        workspace.worktreePath,
+        project.artifactGlobs,
+      );
+    }
 
     if (config.git.commitChanges) {
       const gitEnvironment = {
@@ -238,15 +250,26 @@ export class TaskWorkflow {
       env: projectEnvironment,
     });
 
-    input.onProgress("构建完成，正在上传安装包");
-    const artifact = await this.#dependencies.publisher.publish(artifactPath, input.taskId);
-    input.onProgress("安装包已上传，正在发送结果");
-    return {
+    const result = {
       taskId: input.taskId,
       projectId: input.projectId,
       branchName,
       commitHash: commit.stdout.trim(),
       codexSummary: codexResult.finalMessage,
+    };
+    if (project.deliveryMode === "code") {
+      input.onProgress("代码任务完成，正在发送结果");
+      return { ...result, deliveryMode: "code" };
+    }
+    if (artifactPath === undefined) {
+      throw new Error("安装包交付项目没有生成安装包");
+    }
+    input.onProgress("构建完成，正在上传安装包");
+    const artifact = await this.#dependencies.publisher.publish(artifactPath, input.taskId);
+    input.onProgress("安装包已上传，正在发送结果");
+    return {
+      ...result,
+      deliveryMode: "artifact",
       artifact,
     };
   }

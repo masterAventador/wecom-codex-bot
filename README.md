@@ -1,6 +1,6 @@
 # 企微 Codex 自动修复机器人
 
-这是一个只在本机运行的 TypeScript 服务。群成员在企业微信群里 `@机器人` 直接描述问题后，服务会按发送者、会话和项目权限校验，再到预先登记的目标项目中创建独立 Git worktree，调用本机已登录的 Codex 修改代码、运行测试、构建 Electron 安装包，最后上传对象存储并把下载链接发回原会话。
+这是一个只在本机运行的 TypeScript 服务。群成员在企业微信群里 `@机器人` 直接描述问题后，服务会按发送者、会话和项目权限校验，再到预先登记的目标项目中创建独立 Git worktree，调用本机已登录的 Codex 修改代码并运行测试。普通项目会保留本地任务分支并把结果发回原会话；Electron 项目还可以构建安装包、上传对象存储并返回下载链接。
 
 一个机器人进程可以管理多个代码项目和多套权限组。服务只建立到企业微信的出站 WebSocket 长连接，不需要公网 IP、域名或回调服务器。
 
@@ -18,7 +18,7 @@
 - 每个任务在目标仓库的 `wt/<任务编号>` 中创建独立 worktree 和 `bot/<任务编号>` 分支。
 - 通过当前 macOS 用户的 ChatGPT 登录调用本地 Codex，不需要 OpenAI API Key 或 API 代理。
 - 支持群内文字和图文混排反馈；附件只有通过完整权限校验后才下载，任务结束后自动删除。
-- Codex 修改完成后，由外层服务独立执行该项目配置的测试和 Electron 打包命令。
+- 每个项目可选择 `code` 或 `artifact` 交付模式；前者只测试并提交代码，后者额外构建和发布 Electron 安装包。
 - 支持腾讯云 COS 上传 115MB 等大安装包，并生成限时签名下载地址。
 - 可选择自动提交、自动推送任务分支；永远不会自动合并主分支。
 - 企微和 COS 密钥不会传入 Codex，也不会传给目标项目的安装、测试和构建命令。
@@ -60,11 +60,12 @@ userid + 群聊 chatid / 私聊开关权限校验
         ↓
 目标仓库/wt/任务编号 + bot/任务编号分支
         ↓
-安装依赖 → Codex 测试先行修改 → 外层测试
+可选安装依赖 → Codex 测试先行修改 → 外层测试
         ↓
-Electron 构建 → Git 提交/可选推送
+Git 提交/可选推送
         ↓
-上传 COS → 原企微会话发送下载链接和修改摘要
+code：发送分支、提交和修改摘要（不自动部署）
+artifact：Electron 构建 → 上传 COS → 发送下载链接和修改摘要
 ```
 
 任何环节失败都会停止后续发布，并在原会话返回失败阶段和错误摘要。失败任务的分支和 worktree 会保留，方便人工接管。
@@ -73,7 +74,7 @@ Electron 构建 → Git 提交/可选推送
 
 - Node.js 20 或更高版本。
 - Git。
-- 可以正常构建所有登记 Electron 项目的完整本地环境。
+- 可以正常测试所有登记项目；使用 `artifact` 模式时还要具备完整 Electron 构建环境。
 - 已安装并登录 Codex CLI：
 
 ```bash
@@ -117,21 +118,21 @@ cp config/local.example.json config/local.json
       "baseBranch": "dev",
       "remote": "origin",
       "fetchBeforeTask": true,
+      "deliveryMode": "artifact",
       "installCommand": ["npm", "ci"],
       "testCommand": ["npm", "test"],
       "buildCommand": ["npm", "run", "dist"],
       "artifactGlobs": ["release/*.dmg", "release/*.exe"]
     },
-    "admin-console": {
-      "displayName": "管理后台",
-      "path": "/Users/你的用户名/代码/electron-admin-console",
+    "backend-service": {
+      "displayName": "后端服务",
+      "path": "/Users/你的用户名/代码/backend-service",
       "baseBranch": "main",
       "remote": "origin",
       "fetchBeforeTask": true,
+      "deliveryMode": "code",
       "installCommand": ["pnpm", "install", "--frozen-lockfile"],
-      "testCommand": ["pnpm", "test"],
-      "buildCommand": ["pnpm", "dist"],
-      "artifactGlobs": ["dist/*.dmg", "dist/*.exe"]
+      "testCommand": ["pnpm", "test"]
     }
   }
 }
@@ -142,8 +143,10 @@ cp config/local.example.json config/local.json
 - `path` 必须是绝对路径。
 - 项目 ID 只能包含字母、数字、点、下划线和连字符，最长 64 个字符。
 - `displayName` 必填、不能重复，最长 30 个字符；修改它不会改变仓库定位或权限配置。
-- 安装、测试和构建命令必须写成参数数组，不经过 shell。
-- `artifactGlobs` 只能匹配工作区内部文件，不能使用绝对路径或 `..`。
+- `deliveryMode` 可设为 `code` 或 `artifact`；旧配置省略时按 `artifact` 处理。
+- `testCommand` 必填；`installCommand` 可省略；命令必须写成参数数组，不经过 shell。
+- `artifact` 项目必须配置 `buildCommand` 和 `artifactGlobs`；`artifactGlobs` 只能匹配工作区内部文件，不能使用绝对路径或 `..`。
+- `code` 项目测试通过后只保留任务分支，不生成安装包，也不会自动部署。
 - 服务启动时会逐个确认登记目录是 Git 仓库。
 
 ## 配置权限组
@@ -165,7 +168,7 @@ cp config/local.example.json config/local.json
       "allowedUserIds": ["owner"],
       "allowedChatIds": ["wr_weekend_feedback", "wr_development"],
       "allowDirectMessages": true,
-      "allowedProjectIds": ["desktop-client", "admin-console"]
+      "allowedProjectIds": ["desktop-client", "backend-service"]
     }
   ]
 }
@@ -186,7 +189,7 @@ cp config/local.example.json config/local.json
 
 ## 配置腾讯云 COS
 
-115MB Electron 安装包超过企微智能机器人 SDK 当前约 50MB 的媒体上传实现上限，因此正式使用应选择 COS 模式。
+115MB Electron 安装包超过企微智能机器人 SDK 当前约 50MB 的媒体上传实现上限，因此 `artifact` 项目正式使用应选择 COS 模式。只有 `code` 项目时可保留本地 `filesystem` 配置，它不会被任务使用。
 
 在 `.env` 填写：
 
@@ -241,7 +244,7 @@ WECOM_BOT_SECRET=你的Secret
 ```
 
 - `pushBranches=false`：只保留本地任务分支，适合第一阶段验证。
-- `pushBranches=true`：测试和构建通过后推送到目标项目配置的远端，必须同时启用 `commitChanges`。
+- `pushBranches=true`：项目门禁通过后推送到目标项目配置的远端，必须同时启用 `commitChanges`。
 - 服务不会自动合并 `dev`、`master` 或 `main`。
 - worktree 会保留在相应项目的 `wt/` 下，确认不再需要后可人工执行 `git worktree remove <路径>`。
 

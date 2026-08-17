@@ -10,6 +10,7 @@ const project = {
   baseBranch: "dev",
   remote: "origin",
   fetchBeforeTask: false,
+  deliveryMode: "artifact" as const,
   installCommand: ["npm", "ci"],
   testCommand: ["npm", "test"],
   buildCommand: ["npm", "run", "dist"],
@@ -111,6 +112,7 @@ function successResult(taskId: string, projectId = "desktop-client") {
   return {
     taskId,
     projectId,
+    deliveryMode: "artifact" as const,
     branchName: "bot/task-001",
     commitHash: "abc1234",
     codexSummary: "完成",
@@ -120,6 +122,17 @@ function successResult(taskId: string, projectId = "desktop-client") {
       sizeBytes: 115 * 1024 * 1024,
       sha256: "a".repeat(64),
     },
+  };
+}
+
+function codeSuccessResult(taskId: string, projectId = "desktop-client") {
+  return {
+    taskId,
+    projectId,
+    deliveryMode: "code" as const,
+    branchName: "bot/task-code",
+    commitHash: "def5678",
+    codexSummary: "已修复接口校验",
   };
 }
 
@@ -179,6 +192,26 @@ describe("自然对话消息控制器", () => {
 
     assert.match(current.replies[0] ?? "", /桌面客户端/);
     assert.match(current.notifications.at(-1) ?? "", /下载安装包/);
+  });
+
+  it("代码交付完成后回复分支和提交，不显示安装包并明确未部署", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-code",
+      workflow: { async run(input) { return codeSuccessResult(input.taskId, input.projectId); } },
+    });
+    const current = message({ userId: "tester", content: "修复接口参数校验" });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("代码任务未入队");
+    await result.completion;
+
+    const notification = current.notifications.at(-1) ?? "";
+    assert.match(notification, /项目：桌面客户端/);
+    assert.match(notification, /分支：bot\/task-code/);
+    assert.match(notification, /提交：def5678/);
+    assert.match(notification, /未自动部署/);
+    assert.doesNotMatch(notification, /安装包|下载/);
   });
 
   it("有多个授权项目时保存原问题并回复展示名称选择卡片", async () => {

@@ -93,6 +93,7 @@ process.stdin.on("end", () => {
             baseBranch: "dev",
             remote: "origin",
             fetchBeforeTask: false,
+            deliveryMode: "artifact",
             installCommand: ["npm", "install", "--ignore-scripts"],
             testCommand: ["npm", "test"],
             buildCommand: ["npm", "run", "dist"],
@@ -148,6 +149,10 @@ process.stdin.on("end", () => {
       });
 
       assert.equal(result.projectId, "electron-sample");
+      assert.equal(result.deliveryMode, "artifact");
+      if (result.deliveryMode !== "artifact") {
+        throw new Error("Electron 端到端任务未返回安装包");
+      }
       assert.equal(result.branchName, "bot/e2e-task");
       assert.match(result.commitHash, /^[a-f0-9]+$/);
       assert.equal(result.artifact.sizeBytes, 115 * 1024 * 1024);

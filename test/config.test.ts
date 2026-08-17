@@ -12,6 +12,7 @@ const desktopProject = {
   baseBranch: "dev",
   remote: "origin",
   fetchBeforeTask: false,
+  deliveryMode: "artifact",
   installCommand: ["npm", "ci"],
   testCommand: ["npm", "test"],
   buildCommand: ["npm", "run", "dist"],
@@ -86,6 +87,46 @@ describe("机器人配置", () => {
     assert.equal(config.permissionGroups[1]?.name, "管理员组");
     assert.equal(config.permissionGroups[1]?.allowDirectMessages, true);
     assert.equal(config.artifact.provider, "filesystem");
+  });
+
+  it("代码交付项目不要求安装、构建和安装包配置", () => {
+    const config = parseBotConfig({
+      ...validConfig,
+      projects: {
+        "aijd-demo": {
+          displayName: "AIJD测试项目",
+          path: "/tmp/aijd-demo",
+          baseBranch: "main",
+          remote: "origin",
+          fetchBeforeTask: false,
+          deliveryMode: "code",
+          testCommand: ["python3", "-m", "py_compile", "server.py", "jd_data.py"],
+        },
+      },
+      permissionGroups: [{
+        ...validConfig.permissionGroups[0],
+        allowedProjectIds: ["aijd-demo"],
+      }],
+    });
+
+    assert.equal(config.projects["aijd-demo"]?.deliveryMode, "code");
+    assert.equal(config.projects["aijd-demo"]?.installCommand, undefined);
+    assert.equal(config.projects["aijd-demo"]?.buildCommand, undefined);
+    assert.equal(config.projects["aijd-demo"]?.artifactGlobs, undefined);
+  });
+
+  it("安装包交付项目仍然要求构建命令和安装包匹配规则", () => {
+    const { buildCommand: _buildCommand, artifactGlobs: _artifactGlobs, ...incomplete } =
+      desktopProject;
+
+    assert.throws(
+      () => parseBotConfig({
+        ...validConfig,
+        projects: { "desktop-client": incomplete },
+        permissionGroups: [validConfig.permissionGroups[0]],
+      }),
+      /buildCommand|artifactGlobs/,
+    );
   });
 
   it("要求每个项目配置展示名称，并拒绝重复展示名称", () => {

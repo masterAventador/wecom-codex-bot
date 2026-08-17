@@ -16,6 +16,7 @@ const config: BotConfig = {
       baseBranch: "dev",
       remote: "origin",
       fetchBeforeTask: false,
+      deliveryMode: "artifact",
       installCommand: ["npm", "ci"],
       testCommand: ["npm", "test"],
       buildCommand: ["npm", "run", "dist"],
@@ -120,6 +121,7 @@ describe("修复任务流水线", () => {
     });
 
     assert.equal(result.projectId, "desktop-client");
+    assert.equal(result.deliveryMode, "artifact");
     assert.equal(result.branchName, "bot/task-001");
     assert.equal(result.commitHash, "abc1234");
     assert.equal(result.artifact.downloadUrl, publishedArtifact.downloadUrl);
@@ -139,6 +141,84 @@ describe("修复任务流水线", () => {
       "artifact:publish",
     ]);
     assert.match(progress.at(-1) ?? "", /安装包已上传/);
+  });
+
+  it("代码交付模式只修改、测试和提交，不安装依赖、不构建、不发布", async () => {
+    const codeConfig: BotConfig = {
+      ...config,
+      projects: {
+        "aijd-demo": {
+          displayName: "AIJD测试项目",
+          path: "/tmp/aijd-demo",
+          baseBranch: "main",
+          remote: "origin",
+          fetchBeforeTask: false,
+          deliveryMode: "code",
+          testCommand: ["python3", "-m", "py_compile", "server.py", "jd_data.py"],
+        },
+      },
+      permissionGroups: [{
+        ...config.permissionGroups[0]!,
+        allowedProjectIds: ["aijd-demo"],
+      }],
+    };
+    const commands: string[][] = [];
+    let artifactLookups = 0;
+    let publications = 0;
+    const workflow = new TaskWorkflow({
+      async prepareWorkspace(options) {
+        return { branchName: options.branchName, worktreePath: "/tmp/aijd-demo/wt/task-code" };
+      },
+      async runCommand(options) {
+        commands.push([...options.command]);
+        if (options.command[1] === "status") {
+          return { stdout: " M server.py\n", stderr: "", exitCode: 0 };
+        }
+        if (options.command[1] === "rev-parse") {
+          return { stdout: "def5678\n", stderr: "", exitCode: 0 };
+        }
+        return { stdout: "", stderr: "", exitCode: 0 };
+      },
+      async runCodex() {
+        return { finalMessage: "已修复接口校验", stderr: "" };
+      },
+      async findArtifact() {
+        artifactLookups += 1;
+        throw new Error("代码交付不应查找安装包");
+      },
+      publisher: {
+        async publish() {
+          publications += 1;
+          throw new Error("代码交付不应发布安装包");
+        },
+      },
+    });
+    const progress: string[] = [];
+
+    const result = await workflow.run({
+      taskId: "task-code",
+      projectId: "aijd-demo",
+      prompt: "修复接口参数校验",
+      imagePaths: [],
+      filePaths: [],
+      config: codeConfig,
+      onProgress: (message) => progress.push(message),
+    });
+
+    assert.equal(result.deliveryMode, "code");
+    assert.equal(result.projectId, "aijd-demo");
+    assert.equal(result.commitHash, "def5678");
+    assert.equal("artifact" in result, false);
+    assert.equal(artifactLookups, 0);
+    assert.equal(publications, 0);
+    assert.deepEqual(commands, [
+      ["git", "status", "--porcelain"],
+      ["python3", "-m", "py_compile", "server.py", "jd_data.py"],
+      ["git", "add", "-A"],
+      ["git", "commit", "-m", "fix(bot): 修复接口参数校验"],
+      ["git", "rev-parse", "--short", "HEAD"],
+    ]);
+    assert.match(progress.at(-1) ?? "", /代码任务完成/);
   });
 
   it("测试失败时不构建也不发布", async () => {

@@ -16,6 +16,7 @@ const config = {
       baseBranch: "dev",
       remote: "origin",
       fetchBeforeTask: false,
+      deliveryMode: "artifact",
       installCommand: ["npm", "ci"],
       testCommand: ["npm", "test"],
       buildCommand: ["npm", "run", "dist"],
