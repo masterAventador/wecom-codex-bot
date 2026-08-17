@@ -214,6 +214,102 @@ describe("自然对话消息控制器", () => {
     assert.doesNotMatch(notification, /安装包|下载/);
   });
 
+  it("默认不向企微发送任务执行过程，只保留入队和最终结果", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-quiet",
+      workflow: {
+        async run(input) {
+          input.onProgress("正在创建独立 Git 工作区");
+          input.onProgress("Codex 正在执行：rg --files");
+          return codeSuccessResult(input.taskId, input.projectId);
+        },
+      },
+    });
+    const current = message({ userId: "tester" });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("静默任务未入队");
+    await result.completion;
+
+    assert.equal(current.replies.length, 1);
+    assert.equal(current.notifications.length, 1);
+    assert.match(current.notifications[0] ?? "", /代码修改完成/);
+    assert.doesNotMatch(current.notifications[0] ?? "", /Git 工作区|Codex 正在执行/);
+  });
+
+  it("显式开启后才向企微发送详细执行过程", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-verbose",
+      verboseProgress: true,
+      workflow: {
+        async run(input) {
+          input.onProgress("Codex 正在执行：npm test");
+          return codeSuccessResult(input.taskId, input.projectId);
+        },
+      },
+    });
+    const current = message({ userId: "tester" });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("详细日志任务未入队");
+    await result.completion;
+
+    assert.equal(current.notifications.length, 2);
+    assert.match(current.notifications[0] ?? "", /Codex 正在执行：npm test/);
+    assert.match(current.notifications[1] ?? "", /代码修改完成/);
+  });
+
+  it("最终群消息使用月日摘要标题、@发起人并隐藏原因", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "20260817-114558-internal",
+      now: () => new Date("2026-08-17T11:45:58+08:00").getTime(),
+      summarizeTaskTitle: async () => "README标题加标记",
+      workflow: {
+        async run(input) {
+          return {
+            ...codeSuccessResult(input.taskId, input.projectId),
+            codexSummary: `已完成。
+- 原因：README 标题缺少测试标记。
+- 修改：README 标题追加测试标记。
+- 测试：正文哈希保持一致。`,
+          };
+        },
+      },
+    });
+    const current = message({ userId: "tester" });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("可读名称任务未入队");
+    await result.completion;
+
+    assert.doesNotMatch(current.replies[0] ?? "", /20260817-114558-internal/);
+    const notification = current.notifications.at(-1) ?? "";
+    assert.match(notification, /^<@tester>\n\n## 代码修改完成：0817-README标题加标记/);
+    assert.doesNotMatch(notification, /原因：|20260817-114558-internal/);
+    assert.match(notification, /修改：README 标题追加测试标记/);
+    assert.match(notification, /测试：正文哈希保持一致/);
+  });
+
+  it("单聊最终消息不添加 @ 提及标记", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-direct",
+      now: () => new Date("2026-08-17T11:45:58+08:00").getTime(),
+      summarizeTaskTitle: async () => "修复启动白屏",
+      workflow: { async run(input) { return codeSuccessResult(input.taskId, input.projectId); } },
+    });
+    const current = message({ userId: "tester", chatId: undefined });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("单聊任务未入队");
+    await result.completion;
+
+    assert.doesNotMatch(current.notifications.at(-1) ?? "", /^<@/);
+  });
+
   it("有多个授权项目时保存原问题并回复展示名称选择卡片", async () => {
     let workflowRuns = 0;
     const controller = new BotController({

@@ -2,6 +2,7 @@ import type { BotConfig } from "./config.ts";
 import { authorizeMessage, authorizeProjectSelection } from "./authorization.ts";
 import { classifyMessage } from "./message.ts";
 import { SerialTaskQueue } from "./serial-task-queue.ts";
+import { createTaskDisplayName } from "./task-id.ts";
 import type { TaskWorkflowInput, TaskWorkflowResult } from "./task-workflow.ts";
 
 export type ProjectChoice = {
@@ -39,6 +40,8 @@ type Workflow = {
 type BotControllerDependencies = {
   loadConfig(): Promise<BotConfig>;
   createTaskId(messageId: string): string;
+  summarizeTaskTitle?(prompt: string): Promise<string>;
+  verboseProgress?: boolean;
   now?(): number;
   workflow: Workflow;
 };
@@ -72,19 +75,32 @@ type QueueTaskInput = {
 const MAX_PROJECT_CARD_CHOICES = 6;
 const PROJECT_SELECTION_TTL_MS = 5 * 60 * 1_000;
 
-function successMessage(result: TaskWorkflowResult, projectDisplayName: string): string {
+function visibleCodexSummary(summary: string): string {
+  return summary
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*(?:[-*•⦁]\s*)?(?:原因|根因)\s*[:：]/u.test(line))
+    .join("\n")
+    .trim();
+}
+
+function successMessage(
+  result: TaskWorkflowResult,
+  projectDisplayName: string,
+  taskDisplayName: string,
+): string {
+  const summary = visibleCodexSummary(result.codexSummary);
   if (result.deliveryMode === "code") {
-    return `## 代码修改完成：${result.taskId}
+    return `## 代码修改完成：${taskDisplayName}
 
 - 项目：${projectDisplayName}
 - 分支：${result.branchName}
 - 提交：${result.commitHash}
 - 交付状态：代码已保存在本地任务分支，未自动部署
 
-${result.codexSummary}`;
+${summary}`;
   }
   const sizeMb = (result.artifact.sizeBytes / 1024 / 1024).toFixed(1);
-  return `## 修复完成：${result.taskId}
+  return `## 修复完成：${taskDisplayName}
 
 - 项目：${projectDisplayName}
 - 分支：${result.branchName}
@@ -94,12 +110,20 @@ ${result.codexSummary}`;
 
 [下载安装包](${result.artifact.downloadUrl})
 
-${result.codexSummary}`;
+${summary}`;
 }
 
-function failureMessage(taskId: string, error: unknown): string {
+function failureMessage(taskDisplayName: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
-  return `## 修复失败：${taskId}\n\n${message.slice(0, 2_000)}`;
+  return `## 修复失败：${taskDisplayName}\n\n${message.slice(0, 2_000)}`;
+}
+
+function mentionInitiator(message: IncomingBotMessage, text: string): string {
+  if (message.chatId === undefined) {
+    return text;
+  }
+  const userId = message.userId.replace(/[<>\r\n]/gu, "");
+  return userId.length === 0 ? text : `<@${userId}>\n\n${text}`;
 }
 
 export class BotController {
@@ -180,7 +204,7 @@ export class BotController {
       config,
       message,
       acknowledge: async (position) => message.reply(
-        `已创建任务 **${taskId}**，项目：**${project.displayName}**，当前队列位置：${position}`,
+        `已创建任务，项目：**${project.displayName}**，当前队列位置：${position}`,
       ),
     });
   }
@@ -225,14 +249,20 @@ export class BotController {
       config,
       message: pending.message,
       acknowledge: async () => selection.updateCard(
-        `已选择：${project.displayName}，任务 ${pending.taskId} 已创建。`,
+        `已选择：${project.displayName}，任务已创建。`,
       ),
     });
   }
 
   async #queueTask(input: QueueTaskInput): Promise<HandleResult> {
+    let taskDisplayNamePromise: Promise<string> | undefined;
+    const getTaskDisplayName = () => {
+      taskDisplayNamePromise ??= this.#createTaskDisplayName(input.prompt);
+      return taskDisplayNamePromise;
+    };
     const queued = this.#queue.enqueue(input.message.msgId, async () => {
       try {
+        const taskDisplayName = await getTaskDisplayName();
         const attachments = await input.message.materializeAttachments(input.taskId);
         return await this.#dependencies.workflow.run({
           taskId: input.taskId,
@@ -241,9 +271,11 @@ export class BotController {
           imagePaths: attachments.imagePaths,
           filePaths: attachments.filePaths,
           config: input.config,
-          onProgress: (progress) => {
-            void input.message.notify(`**${input.taskId}**：${progress}`).catch(() => undefined);
-          },
+          onProgress: this.#dependencies.verboseProgress === true
+            ? (progress) => {
+              void input.message.notify(`**${taskDisplayName}**：${progress}`).catch(() => undefined);
+            }
+            : () => undefined,
         });
       } finally {
         await input.message.cleanupAttachments(input.taskId);
@@ -255,8 +287,14 @@ export class BotController {
     }
 
     const completion = queued.completion.then(
-      async (result) => input.message.notify(successMessage(result, input.projectDisplayName)),
-      async (error: unknown) => input.message.notify(failureMessage(input.taskId, error)),
+      async (result) => input.message.notify(mentionInitiator(
+        input.message,
+        successMessage(result, input.projectDisplayName, await getTaskDisplayName()),
+      )),
+      async (error: unknown) => input.message.notify(mentionInitiator(
+        input.message,
+        failureMessage(await getTaskDisplayName(), error),
+      )),
     );
     try {
       await input.acknowledge(queued.position);
@@ -269,6 +307,16 @@ export class BotController {
 
   #now(): number {
     return this.#dependencies.now?.() ?? Date.now();
+  }
+
+  async #createTaskDisplayName(prompt: string): Promise<string> {
+    let title = prompt;
+    try {
+      title = await this.#dependencies.summarizeTaskTitle?.(prompt) ?? prompt;
+    } catch {
+      title = prompt;
+    }
+    return createTaskDisplayName(title, new Date(this.#now()));
   }
 
   #selectionExpired(selection: PendingProjectSelection): boolean {

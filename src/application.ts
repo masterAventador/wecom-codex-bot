@@ -6,6 +6,7 @@ import { BotController } from "./bot-controller.ts";
 import { runCodex } from "./codex-runner.ts";
 import {
   loadBotConfigFile,
+  parseRuntimeOptions,
   parseRuntimeSecrets,
   type BotConfig,
   type RuntimeSecrets,
@@ -15,6 +16,7 @@ import { runPreflight } from "./preflight.ts";
 import { runCommand } from "./process-runner.ts";
 import { createArtifactPublisher } from "./publisher-factory.ts";
 import { createTaskId } from "./task-id.ts";
+import { generateTaskTitle } from "./task-title.ts";
 import { TaskWorkflow } from "./task-workflow.ts";
 import { startWeComGateway, type EventedWeComClient } from "./wecom-gateway.ts";
 
@@ -64,6 +66,7 @@ export async function startApplication(options: StartApplicationOptions): Promis
   };
   const initialConfig = await loadBotConfigFile(options.configPath);
   const secrets = parseRuntimeSecrets(initialConfig, options.environment);
+  const runtimeOptions = parseRuntimeOptions(options.environment);
   await dependencies.preflight(initialConfig);
   const publisher = dependencies.createPublisher(initialConfig, secrets);
   const workflow = new TaskWorkflow({
@@ -76,6 +79,13 @@ export async function startApplication(options: StartApplicationOptions): Promis
   const controller = new BotController({
     loadConfig: () => loadBotConfigFile(options.configPath),
     createTaskId: (messageId) => createTaskId(messageId),
+    summarizeTaskTitle: (prompt) => generateTaskTitle({
+      binary: initialConfig.codex.binary,
+      cwd: process.cwd(),
+      issueDescription: prompt,
+      timeoutMs: 60_000,
+    }),
+    verboseProgress: runtimeOptions.verboseProgress,
     workflow,
   });
   const client = dependencies.createWeComClient(secrets, options.logger);
@@ -96,6 +106,7 @@ export async function startApplication(options: StartApplicationOptions): Promis
         ]),
       ),
       artifactProvider: initialConfig.artifact.provider,
+      verboseProgress: runtimeOptions.verboseProgress,
     },
     "企微 Codex 机器人已启动",
   );

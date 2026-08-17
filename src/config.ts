@@ -143,6 +143,9 @@ export type RuntimeSecrets = {
   wecom: { botId: string; secret: string };
   cos?: { secretId: string; secretKey: string };
 };
+export type RuntimeOptions = {
+  verboseProgress: boolean;
+};
 
 export function parseBotConfig(value: unknown): BotConfig {
   return botConfigSchema.parse(value);
@@ -151,6 +154,17 @@ export function parseBotConfig(value: unknown): BotConfig {
 export async function loadBotConfigFile(configPath: string): Promise<BotConfig> {
   const content = await readFile(configPath, "utf8");
   return parseBotConfig(JSON.parse(content) as unknown);
+}
+
+export function parseRuntimeOptions(environment: NodeJS.ProcessEnv): RuntimeOptions {
+  const value = z
+    .object({
+      BOT_VERBOSE_PROGRESS: z.enum(["true", "false"]).default("false"),
+    })
+    .parse({
+      BOT_VERBOSE_PROGRESS: environment.BOT_VERBOSE_PROGRESS?.trim().toLowerCase(),
+    });
+  return { verboseProgress: value.BOT_VERBOSE_PROGRESS === "true" };
 }
 
 export function parseRuntimeSecrets(

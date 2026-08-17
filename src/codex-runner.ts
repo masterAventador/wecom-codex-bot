@@ -8,6 +8,7 @@ export type RunCodexOptions = {
   timeoutMs: number;
   imagePaths?: readonly string[];
   onProgress?: (message: string) => void;
+  sandbox?: "read-only" | "workspace-write";
 };
 
 export type CodexRunResult = {
@@ -68,7 +69,7 @@ export function buildCodexPrompt(
 3. 再做最小必要修改，让相关测试通过，并运行配置允许的检查。
 4. 检查 git diff，移除调试代码和无关修改。
 5. 不要提交、推送或发布代码，不要生成正式安装包；这些步骤由外层服务完成。
-6. 最终用中文说明原因、修改文件和测试结果。
+6. 最终用中文说明修改文件和测试结果，不要输出原因或根因段落。
 
 <issue>
 ${safeIssueDescription}
@@ -79,9 +80,13 @@ export function runCodex(options: RunCodexOptions): Promise<CodexRunResult> {
   const args = [
     "exec",
     "--json",
-    "--approve-for-me",
-    "--ephemeral",
   ];
+  if (options.sandbox === "read-only") {
+    args.push("--sandbox", "read-only");
+  } else {
+    args.push("--approve-for-me");
+  }
+  args.push("--ephemeral");
   for (const imagePath of options.imagePaths ?? []) {
     args.push("--image", imagePath);
   }

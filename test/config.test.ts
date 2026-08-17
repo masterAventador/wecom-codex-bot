@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { loadBotConfigFile, parseBotConfig, parseRuntimeSecrets } from "../src/config.ts";
+import {
+  loadBotConfigFile,
+  parseBotConfig,
+  parseRuntimeOptions,
+  parseRuntimeSecrets,
+} from "../src/config.ts";
 
 const desktopProject = {
   displayName: "桌面客户端",
@@ -285,6 +290,22 @@ describe("机器人配置", () => {
           WECOM_BOT_SECRET: "bot-secret",
         }),
       /COS_SECRET_ID/,
+    );
+  });
+
+  it("详细进度环境变量默认关闭，只接受明确的 true 或 false", () => {
+    assert.deepEqual(parseRuntimeOptions({}), { verboseProgress: false });
+    assert.deepEqual(
+      parseRuntimeOptions({ BOT_VERBOSE_PROGRESS: "true" }),
+      { verboseProgress: true },
+    );
+    assert.deepEqual(
+      parseRuntimeOptions({ BOT_VERBOSE_PROGRESS: "false" }),
+      { verboseProgress: false },
+    );
+    assert.throws(
+      () => parseRuntimeOptions({ BOT_VERBOSE_PROGRESS: "yes" }),
+      /BOT_VERBOSE_PROGRESS/,
     );
   });
 });
