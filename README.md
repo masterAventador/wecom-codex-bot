@@ -198,7 +198,7 @@ cp config/local.example.json config/local.json
       "allowedUserIds": ["owner"],
       "allowedChatIds": ["wr_weekend_feedback", "wr_development"],
       "allowDirectMessages": true,
-      "allowedProjectIds": ["desktop-client", "backend-service"]
+      "allowedProjectRoots": ["/Users/你的用户名/代码"]
     }
   ]
 }
@@ -208,9 +208,11 @@ cp config/local.example.json config/local.json
 
 - 同一用户和群命中多个权限组时，可操作项目取这些权限组的并集。
 - 一个权限组里的用户列表和群列表是组合授权：列表中的任意用户都能在列表中的任意群操作该组项目。需要更严格组合时应拆成多个权限组。
+- `allowedProjectIds` 用于逐个授权项目；`allowedProjectRoots` 用于授权绝对目录下的所有已登记项目，两者可以同时配置。
+- 目录级权限只会展开 `projects` 中已经登记、且 `path` 确实位于该目录内的项目。它不会自动发现新仓库，也不会把整个目录作为一个仓库交给 Codex。
 - `allowDirectMessages` 只控制该组用户能否私聊触发任务，不会放宽群聊的 `chatid` 校验；省略时默认为 `false`。
 - 同一用户在同一群或私聊中最终匹配的项目不能超过 6 个，这是企业微信按钮卡片的上限；超过时机器人会拒绝创建任务并提示调整权限组。
-- 权限组名称不能重复，`allowedProjectIds` 必须全部存在于 `projects`。
+- 权限组名称不能重复；`allowedProjectIds` 必须全部存在于 `projects`；`allowedProjectRoots` 必须使用绝对路径，并且至少覆盖一个已登记项目。
 - 权限组在每条消息到达时重新读取，保存配置后不用重启。
 - 新增或修改项目路径后建议重启服务，让启动前检查覆盖新仓库。
 - 未授权用户不会创建 worktree、下载附件或调用 Codex。

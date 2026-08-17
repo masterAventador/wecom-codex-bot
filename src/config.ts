@@ -1,4 +1,4 @@
-import { isAbsolute } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { readFile } from "node:fs/promises";
 
 import { z } from "zod";
@@ -14,6 +14,10 @@ const absolutePathSchema = z
   .string()
   .min(1)
   .refine(isAbsolute, "项目仓库路径必须是绝对路径");
+const absoluteProjectRootSchema = z
+  .string()
+  .min(1)
+  .refine(isAbsolute, "allowedProjectRoots 必须使用绝对路径");
 const projectIdSchema = z
   .string()
   .regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/, "项目 ID 只能包含字母、数字、点、下划线和连字符");
@@ -55,8 +59,27 @@ const permissionGroupSchema = z.object({
   allowedUserIds: z.array(z.string().min(1)).min(1),
   allowedChatIds: z.array(z.string().min(1)).min(1),
   allowDirectMessages: z.boolean().default(false),
-  allowedProjectIds: z.array(projectIdSchema).min(1),
+  allowedProjectIds: z.array(projectIdSchema).default([]),
+  allowedProjectRoots: z.array(absoluteProjectRootSchema).min(1).optional(),
+}).superRefine((group, context) => {
+  if (group.allowedProjectIds.length === 0 && group.allowedProjectRoots === undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["allowedProjectIds"],
+      message: "权限组必须配置 allowedProjectIds 或 allowedProjectRoots",
+    });
+  }
 });
+
+function pathIsWithinRoot(path: string, root: string): boolean {
+  const relativePath = relative(resolve(root), resolve(path));
+  return relativePath === ""
+    || (
+      relativePath !== ".."
+      && !relativePath.startsWith(`..${sep}`)
+      && !isAbsolute(relativePath)
+    );
+}
 
 const filesystemArtifactSchema = z.object({
   provider: z.literal("filesystem"),
@@ -146,8 +169,34 @@ const botConfigSchema = z.object({
         });
       }
     }
+    for (const [rootIndex, root] of (group.allowedProjectRoots ?? []).entries()) {
+      const coversRegisteredProject = Object.values(config.projects)
+        .some((project) => pathIsWithinRoot(project.path, root));
+      if (!coversRegisteredProject) {
+        context.addIssue({
+          code: "custom",
+          path: ["permissionGroups", groupIndex, "allowedProjectRoots", rootIndex],
+          message: `${root} 没有覆盖任何已登记项目`,
+        });
+      }
+    }
   }
-});
+}).transform((config) => ({
+  ...config,
+  permissionGroups: config.permissionGroups.map((group) => {
+    const projectIdsFromRoots = Object.entries(config.projects)
+      .filter(([, project]) => (group.allowedProjectRoots ?? [])
+        .some((root) => pathIsWithinRoot(project.path, root)))
+      .map(([projectId]) => projectId);
+    return {
+      ...group,
+      allowedProjectIds: [...new Set([
+        ...group.allowedProjectIds,
+        ...projectIdsFromRoots,
+      ])].sort(),
+    };
+  }),
+}));
 
 export type BotConfig = z.infer<typeof botConfigSchema>;
 export type ProjectConfig = BotConfig["projects"][string];

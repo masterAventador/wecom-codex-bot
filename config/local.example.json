@@ -40,7 +40,7 @@
       "allowedUserIds": ["你的企微userid"],
       "allowedChatIds": ["周末反馈群chatid", "研发群chatid"],
       "allowDirectMessages": true,
-      "allowedProjectIds": ["desktop-client", "backend-service"]
+      "allowedProjectRoots": ["/Users/你的用户名/代码"]
     }
   ],
   "codex": {

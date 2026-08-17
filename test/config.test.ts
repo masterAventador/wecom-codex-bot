@@ -95,6 +95,61 @@ describe("机器人配置", () => {
     assert.equal(config.artifact.provider, "filesystem");
   });
 
+  it("目录级权限自动覆盖根目录内的已登记项目，不误匹配同名前缀目录", () => {
+    const config = parseBotConfig({
+      ...validConfig,
+      projects: {
+        "inside-project": {
+          ...desktopProject,
+          displayName: "目录内项目",
+          path: "/workspace/sourceCode/inside-project",
+        },
+        "outside-project": {
+          ...desktopProject,
+          displayName: "目录外项目",
+          path: "/workspace/sourceCode-backup/outside-project",
+        },
+      },
+      permissionGroups: [{
+        name: "个人源码管理员",
+        allowedUserIds: ["owner"],
+        allowedChatIds: ["group-1"],
+        allowDirectMessages: true,
+        allowedProjectRoots: ["/workspace/sourceCode"],
+      }],
+    });
+
+    assert.deepEqual(config.permissionGroups[0]?.allowedProjectIds, ["inside-project"]);
+    assert.deepEqual(
+      config.permissionGroups[0]?.allowedProjectRoots,
+      ["/workspace/sourceCode"],
+    );
+  });
+
+  it("目录级权限要求绝对路径，并且必须覆盖至少一个已登记项目", () => {
+    const group = {
+      name: "个人源码管理员",
+      allowedUserIds: ["owner"],
+      allowedChatIds: ["group-1"],
+      allowDirectMessages: true,
+    };
+
+    assert.throws(
+      () => parseBotConfig({
+        ...validConfig,
+        permissionGroups: [{ ...group, allowedProjectRoots: ["../sourceCode"] }],
+      }),
+      /allowedProjectRoots|绝对路径/,
+    );
+    assert.throws(
+      () => parseBotConfig({
+        ...validConfig,
+        permissionGroups: [{ ...group, allowedProjectRoots: ["/workspace/sourceCode"] }],
+      }),
+      /没有覆盖任何已登记项目/,
+    );
+  });
+
   it("接受 userid 到群聊显示姓名的本地映射", () => {
     const config = parseBotConfig({
       ...validConfig,
