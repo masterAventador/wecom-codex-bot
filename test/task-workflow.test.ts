@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 
 import type { BotConfig } from "../src/config.ts";
 import type { PublishedArtifact } from "../src/artifact-publisher.ts";
+import { ClarificationNeededError } from "../src/issue-triage.ts";
 import { createSafeProjectEnvironment, TaskWorkflow } from "../src/task-workflow.ts";
 
 const config: BotConfig = {
@@ -72,6 +73,109 @@ describe("修复任务流水线", () => {
         SIGNING_PASSWORD: "keep-for-build",
       },
     );
+  });
+
+  it("需求不明确时在创建 worktree 前停止并要求补充信息", async () => {
+    let workspaceCalls = 0;
+    const workflow = new TaskWorkflow({
+      async triageIssue(options) {
+        assert.equal(options.cwd, "/tmp/repository");
+        assert.equal(options.issueDescription, "这个不太对");
+        return { kind: "clarify", question: "请说明具体页面、当前现象和期望结果。" };
+      },
+      async prepareWorkspace() {
+        workspaceCalls += 1;
+        throw new Error("不应创建 worktree");
+      },
+      async runCommand() { throw new Error("不应执行命令"); },
+      async runCodex() { throw new Error("不应修改代码"); },
+      async findArtifact() { throw new Error("不应查找安装包"); },
+      publisher: { async publish() { throw new Error("不应发布"); } },
+    });
+
+    await assert.rejects(
+      workflow.run({
+        taskId: "task-unclear",
+        projectId: "desktop-client",
+        prompt: "这个不太对",
+        imagePaths: [],
+        filePaths: [],
+        config,
+        onProgress: () => undefined,
+      }),
+      (error: unknown) => {
+        assert.equal(error instanceof ClarificationNeededError, true);
+        assert.match((error as Error).message, /请说明具体页面/);
+        return true;
+      },
+    );
+    assert.equal(workspaceCalls, 0);
+  });
+
+  it("项目介绍或进度问题只读回答，不创建 worktree", async () => {
+    let workspaceCalls = 0;
+    const workflow = new TaskWorkflow({
+      async triageIssue(options) {
+        assert.equal(options.issueDescription, "这个项目是做什么的，整体进度怎么样？");
+        return {
+          kind: "answer",
+          answer: "这是一个职位描述生成演示项目，目前基础功能已经完成。",
+        };
+      },
+      async prepareWorkspace() {
+        workspaceCalls += 1;
+        throw new Error("答疑不应创建 worktree");
+      },
+      async runCommand() { throw new Error("答疑不应执行写入命令"); },
+      async runCodex() { throw new Error("答疑不应调用写入 Codex"); },
+      async findArtifact() { throw new Error("答疑不应查找安装包"); },
+      publisher: { async publish() { throw new Error("答疑不应发布"); } },
+    });
+
+    const result = await workflow.run({
+      taskId: "task-answer",
+      projectId: "desktop-client",
+      prompt: "这个项目是做什么的，整体进度怎么样？",
+      imagePaths: [],
+      filePaths: [],
+      config,
+      onProgress: () => undefined,
+    });
+
+    assert.equal(result.deliveryMode, "answer");
+    if (result.deliveryMode !== "answer") throw new Error("未返回答疑结果");
+    assert.match(result.answer, /职位描述生成演示项目/u);
+    assert.equal(workspaceCalls, 0);
+  });
+
+  it("询问打包或部署能力时优先只读答疑，不触发交付配置检查", async () => {
+    const questionConfig = structuredClone(config);
+    questionConfig.projects["desktop-client"]!.deliveryMode = "code";
+    delete questionConfig.projects["desktop-client"]!.buildCommand;
+    delete questionConfig.projects["desktop-client"]!.artifactGlobs;
+    delete questionConfig.projects["desktop-client"]!.deployCommand;
+    const workflow = new TaskWorkflow({
+      async triageIssue() {
+        return { kind: "answer", answer: "当前项目还没有配置部署命令。" };
+      },
+      async prepareWorkspace() { throw new Error("答疑不应创建 worktree"); },
+      async runCommand() { throw new Error("答疑不应执行命令"); },
+      async runCodex() { throw new Error("答疑不应修改代码"); },
+      async findArtifact() { throw new Error("答疑不应查找安装包"); },
+      publisher: { async publish() { throw new Error("答疑不应发布"); } },
+    });
+
+    const result = await workflow.run({
+      taskId: "task-capability-question",
+      projectId: "desktop-client",
+      prompt: "这个项目支持部署吗？",
+      imagePaths: [],
+      filePaths: [],
+      config: questionConfig,
+      onProgress: () => undefined,
+    });
+
+    assert.equal(result.deliveryMode, "answer");
   });
 
   it("依次安装依赖、调用 Codex、测试、构建、提交并发布安装包", async () => {

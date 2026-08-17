@@ -1,6 +1,7 @@
 import type { BotConfig } from "./config.ts";
 import { authorizeMessage, authorizeProjectSelection } from "./authorization.ts";
 import { classifyMessage } from "./message.ts";
+import { ClarificationNeededError } from "./issue-triage.ts";
 import { SerialTaskQueue } from "./serial-task-queue.ts";
 import { createTaskDisplayName } from "./task-id.ts";
 import type { TaskWorkflowInput, TaskWorkflowResult } from "./task-workflow.ts";
@@ -89,6 +90,9 @@ function successMessage(
   projectDisplayName: string,
   taskDisplayName: string,
 ): string {
+  if (result.deliveryMode === "answer") {
+    return `## 项目答疑：${taskDisplayName}\n\n${result.answer}`;
+  }
   const summary = visibleCodexSummary(result.codexSummary);
   const gitResult = result.mergedToBaseBranch === undefined
     ? `- 分支：${result.branchName}\n- 提交：${result.commitHash}`
@@ -123,7 +127,13 @@ ${deployResult}
 ${summary}`;
 }
 
-function failureMessage(taskDisplayName: string, error: unknown): string {
+function failureMessage(taskDisplayName: string, error: unknown, isGroup: boolean): string {
+  if (error instanceof ClarificationNeededError) {
+    const followUp = isGroup
+      ? "群聊中请引用本消息并再次 @我。"
+      : "请直接回复补充信息。";
+    return `## 需要补充信息：${taskDisplayName}\n\n${error.message}\n\n${followUp}`;
+  }
   const message = error instanceof Error ? error.message : String(error);
   return `## 修复失败：${taskDisplayName}\n\n${message.slice(0, 2_000)}`;
 }
@@ -220,7 +230,7 @@ export class BotController {
       config,
       message,
       acknowledge: async (position) => message.reply(
-        `已创建任务，项目：**${project.displayName}**，当前队列位置：${position}`,
+        `已收到，项目：**${project.displayName}**，当前队列位置：${position}`,
       ),
     });
   }
@@ -267,7 +277,7 @@ export class BotController {
       config,
       message: pending.message,
       acknowledge: async () => selection.updateCard(
-        `已选择：${project.displayName}，任务已创建。`,
+        `已选择：${project.displayName}，消息已进入处理队列。`,
       ),
     });
   }
@@ -313,7 +323,7 @@ export class BotController {
       async (error: unknown) => input.message.notify(mentionInitiator(
         input.message,
         input.initiatorDisplayName,
-        failureMessage(await getTaskDisplayName(), error),
+        failureMessage(await getTaskDisplayName(), error, input.message.chatId !== undefined),
       )),
     );
     try {

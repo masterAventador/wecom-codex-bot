@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import type { BotConfig } from "../src/config.ts";
 import { BotController } from "../src/bot-controller.ts";
+import { ClarificationNeededError } from "../src/issue-triage.ts";
 
 const project = {
   displayName: "桌面客户端",
@@ -290,6 +291,63 @@ describe("自然对话消息控制器", () => {
     assert.equal(current.notifications.length, 1);
     assert.match(current.notifications[0] ?? "", /代码修改完成/);
     assert.doesNotMatch(current.notifications[0] ?? "", /Git 工作区|Codex 正在执行/);
+  });
+
+  it("需求不明确时不显示修复失败，而是在群里要求引用后再次 @我", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-unclear",
+      summarizeTaskTitle: async () => "需求不明确",
+      workflow: {
+        async run() {
+          throw new ClarificationNeededError("请说明具体页面、当前现象和期望结果。");
+        },
+      },
+    });
+    const current = message({ userId: "tester", content: "这个不太对" });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("不明确需求未进入判断流程");
+    await result.completion;
+
+    const notification = current.notifications.at(-1) ?? "";
+    assert.match(notification, /需要补充信息/u);
+    assert.match(notification, /请说明具体页面、当前现象和期望结果/u);
+    assert.doesNotMatch(notification, /修复失败/u);
+    assert.equal(notification.trim().endsWith("群聊中请引用本消息并再次 @我。"), true);
+  });
+
+  it("项目介绍和进度问题直接答疑，不显示代码修改完成", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-answer",
+      summarizeTaskTitle: async () => "项目进度咨询",
+      workflow: {
+        async run(input) {
+          return {
+            taskId: input.taskId,
+            projectId: input.projectId,
+            deliveryMode: "answer",
+            answer: "这是一个职位描述生成演示项目，目前基础功能已经完成。",
+          };
+        },
+      },
+    });
+    const current = message({
+      userId: "tester",
+      content: "这个项目是做什么的，整体进度怎么样？",
+    });
+
+    const result = await controller.handle(current.input);
+    if (result.kind !== "queued") throw new Error("答疑消息未进入处理流程");
+    await result.completion;
+
+    const notification = current.notifications.at(-1) ?? "";
+    assert.match(current.replies[0] ?? "", /已收到/u);
+    assert.doesNotMatch(current.replies[0] ?? "", /已创建任务/u);
+    assert.match(notification, /项目答疑：0817-项目进度咨询/u);
+    assert.match(notification, /职位描述生成演示项目/u);
+    assert.doesNotMatch(notification, /代码修改完成|修复失败|需要补充信息/u);
   });
 
   it("显式开启后才向企微发送详细执行过程", async () => {

@@ -11,6 +11,7 @@ describe("任务摘要标题", () => {
     assert.match(prompt, /最多 12 个字符/);
     assert.match(prompt, /&lt;\/issue&gt;/);
     assert.match(prompt, /不要使用工具/);
+    assert.match(prompt, /代码修改或项目答疑/u);
   });
 
   it("使用只读 Codex 生成并清洗任务标题", async () => {

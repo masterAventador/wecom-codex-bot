@@ -12,6 +12,7 @@ import {
   type RuntimeSecrets,
 } from "./config.ts";
 import { mergeGitWorkspace, prepareGitWorkspace } from "./git-workspace.ts";
+import { triageIssue } from "./issue-triage.ts";
 import { runPreflight } from "./preflight.ts";
 import { runCommand } from "./process-runner.ts";
 import { createArtifactPublisher } from "./publisher-factory.ts";
@@ -72,6 +73,7 @@ export async function startApplication(options: StartApplicationOptions): Promis
   const workflow = new TaskWorkflow({
     prepareWorkspace: prepareGitWorkspace,
     mergeWorkspace: mergeGitWorkspace,
+    triageIssue,
     runCommand,
     runCodex,
     findArtifact: findNewestArtifact,

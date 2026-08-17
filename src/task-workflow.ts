@@ -5,6 +5,11 @@ import type { ArtifactPublisher, PublishedArtifact } from "./artifact-publisher.
 import { buildCodexPrompt, type CodexRunResult, type RunCodexOptions } from "./codex-runner.ts";
 import type { BotConfig } from "./config.ts";
 import type { GitWorkspace } from "./git-workspace.ts";
+import {
+  ClarificationNeededError,
+  type IssueTriageDecision,
+  type IssueTriageOptions,
+} from "./issue-triage.ts";
 import type { CommandResult, RunCommandOptions } from "./process-runner.ts";
 import { detectTaskActions } from "./task-actions.ts";
 
@@ -27,6 +32,7 @@ type MergeWorkspaceOptions = {
 type TaskWorkflowDependencies = {
   prepareWorkspace(options: PrepareWorkspaceOptions): Promise<GitWorkspace>;
   mergeWorkspace?(options: MergeWorkspaceOptions): Promise<void>;
+  triageIssue?(options: IssueTriageOptions): Promise<IssueTriageDecision>;
   runCommand(options: RunCommandOptions): Promise<CommandResult>;
   runCodex(options: RunCodexOptions): Promise<CodexRunResult>;
   findArtifact(worktreePath: string, artifactGlobs: readonly string[]): Promise<string>;
@@ -56,7 +62,17 @@ type TaskWorkflowResultBase = {
 export type TaskWorkflowResult = TaskWorkflowResultBase & (
   | { deliveryMode: "code" }
   | { deliveryMode: "artifact"; artifact: PublishedArtifact }
-);
+) | {
+  taskId: string;
+  projectId: string;
+  deliveryMode: "answer";
+  answer: string;
+  branchName?: never;
+  commitHash?: never;
+  codexSummary?: never;
+  mergedToBaseBranch?: never;
+  deployed?: never;
+};
 
 const BOT_SECRET_KEYS = new Set(["WECOM_BOT_SECRET", "COS_SECRET_ID", "COS_SECRET_KEY"]);
 const INSTALL_TIMEOUT_MS = 20 * 60_000;
@@ -146,6 +162,28 @@ export class TaskWorkflow {
       throw new Error(`项目未登记：${input.projectId}`);
     }
     const actions = detectTaskActions(input.prompt);
+    if (actions.codeChange && this.#dependencies.triageIssue !== undefined) {
+      input.onProgress("正在只读判断消息意图和需求完整性");
+      const decision = await this.#dependencies.triageIssue({
+        binary: config.codex.binary,
+        cwd: project.path,
+        issueDescription: input.prompt,
+        imagePaths: input.imagePaths,
+        filePaths: input.filePaths,
+        timeoutMs: Math.min(config.codex.timeoutMinutes * 60_000, 120_000),
+      });
+      if (decision.kind === "clarify") {
+        throw new ClarificationNeededError(decision.question);
+      }
+      if (decision.kind === "answer") {
+        return {
+          taskId: input.taskId,
+          projectId: input.projectId,
+          deliveryMode: "answer",
+          answer: decision.answer,
+        };
+      }
+    }
     if (
       actions.packageArtifact
       && (
