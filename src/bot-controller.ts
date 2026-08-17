@@ -172,14 +172,16 @@ export class BotController {
       return { kind: "ignored" };
     }
     if (decision.kind === "denied") {
-      if (decision.reason === "user") {
-        await message.reply(`无权触发代码任务。你的 userid：${decision.userId}`);
-      } else if (decision.reason === "project") {
+      if (decision.reason === "project") {
         await message.reply(
           `你无权操作项目 ${decision.projectId}。当前可用项目：${decision.allowedProjectIds.join("、")}`,
         );
+      } else if (message.chatId !== undefined) {
+        await message.reply(
+          `当前群或用户不在白名单中。\n\nuserid：${message.userId}\nchatid：${message.chatId}`,
+        );
       } else {
-        await message.reply(`当前群不在白名单中。chatid：${message.chatId ?? "无"}`);
+        await message.reply(`当前私聊用户不在白名单中。userid：${message.userId}`);
       }
       return { kind: "denied" };
     }

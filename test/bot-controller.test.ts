@@ -143,7 +143,7 @@ function codeSuccessResult(taskId: string, projectId = "desktop-client") {
 }
 
 describe("自然对话消息控制器", () => {
-  it("未授权用户得到自己的 userid，不会创建任务", async () => {
+  it("群聊未授权用户同时得到自己的 userid 和当前 chatid，不会创建任务", async () => {
     let workflowRuns = 0;
     const controller = new BotController({
       loadConfig: async () => config,
@@ -155,8 +155,39 @@ describe("自然对话消息控制器", () => {
     const result = await controller.handle(current.input);
 
     assert.equal(result.kind, "denied");
-    assert.match(current.replies[0] ?? "", /visitor/);
+    assert.match(current.replies[0] ?? "", /userid：visitor/u);
+    assert.match(current.replies[0] ?? "", /chatid：group-1/u);
     assert.equal(workflowRuns, 0);
+  });
+
+  it("新群里的新用户首次触发时同时回显 userid 和 chatid", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-001",
+      workflow: { async run() { throw new Error("不应执行"); } },
+    });
+    const current = message({ userId: "new-user", chatId: "new-group" });
+
+    const result = await controller.handle(current.input);
+
+    assert.equal(result.kind, "denied");
+    assert.match(current.replies[0] ?? "", /userid：new-user/u);
+    assert.match(current.replies[0] ?? "", /chatid：new-group/u);
+  });
+
+  it("私聊未授权时只回显 userid", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-001",
+      workflow: { async run() { throw new Error("不应执行"); } },
+    });
+    const current = message({ userId: "new-user", chatId: undefined });
+
+    const result = await controller.handle(current.input);
+
+    assert.equal(result.kind, "denied");
+    assert.match(current.replies[0] ?? "", /userid：new-user/u);
+    assert.doesNotMatch(current.replies[0] ?? "", /chatid/u);
   });
 
   it("只有一个授权项目时直接使用展示名称创建任务", async () => {
