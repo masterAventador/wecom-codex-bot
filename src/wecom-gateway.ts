@@ -331,6 +331,7 @@ export function startWeComGateway(options: StartWeComGatewayOptions): { stop(): 
           await options.client.updateTemplateCard(frame, {
             card_type: "text_notice",
             main_title: { title: text },
+            card_action: { type: 0 },
             task_id: selectionId,
           }, [frame.body.from.userid]);
         },

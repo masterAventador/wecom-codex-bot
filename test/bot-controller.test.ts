@@ -584,6 +584,7 @@ describe("自然对话消息控制器", () => {
     const result = await controller.handleProjectSelection(clicked.input);
     assert.equal(result.kind, "queued");
     assert.match(clicked.updates[0] ?? "", /管理后台/);
+    assert.ok(current.notifications.some((text) => /已选择.*管理后台.*正在处理/.test(text)));
     if (result.kind !== "queued") throw new Error("选择项目后任务未入队");
     await result.completion;
 
@@ -593,6 +594,27 @@ describe("自然对话消息控制器", () => {
       "cleanup",
     ]);
     assert.match(current.notifications.at(-1) ?? "", /项目：管理后台/);
+  });
+
+  it("确认卡片更新失败时仍主动告知所选项目并继续处理", async () => {
+    const controller = new BotController({
+      loadConfig: async () => config,
+      createTaskId: () => "task-001",
+      workflow: { async run(input) { return successResult(input.taskId, input.projectId); } },
+    });
+    const current = message({ content: "介绍一下这个项目" });
+    await controller.handle(current.input);
+    const clicked = selection({
+      updateCard: async () => { throw new Error("企微拒绝更新卡片"); },
+    });
+
+    const result = await controller.handleProjectSelection(clicked.input);
+
+    assert.equal(result.kind, "queued");
+    assert.ok(current.notifications.some((text) => /已选择.*管理后台.*正在处理/.test(text)));
+    if (result.kind !== "queued") throw new Error("选择项目后任务未入队");
+    await result.completion;
+    assert.match(current.notifications.at(-1) ?? "", /修复完成/);
   });
 
   it("其他用户或其他会话不能点击别人的项目选择卡片", async () => {

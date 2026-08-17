@@ -278,9 +278,14 @@ export class BotController {
       ...(initiatorDisplayName === undefined ? {} : { initiatorDisplayName }),
       config,
       message: pending.message,
-      acknowledge: async () => selection.updateCard(
-        `已选择：${project.displayName}，消息已进入处理队列。`,
-      ),
+      acknowledge: async () => {
+        await Promise.all([
+          selection.updateCard(
+            `已选择：${project.displayName}，消息已进入处理队列。`,
+          ).catch(() => undefined),
+          pending.message.notify(`已选择项目：**${project.displayName}**，正在处理。`),
+        ]);
+      },
     });
   }
 

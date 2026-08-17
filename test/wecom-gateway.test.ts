@@ -233,6 +233,7 @@ describe("企微消息适配", () => {
       args: [frame, {
         card_type: "text_notice",
         main_title: { title: "已选择：管理后台，任务已创建。" },
+        card_action: { type: 0 },
         task_id: "select_task-001",
       }, ["owner"]],
     }]);
