@@ -164,7 +164,6 @@ describe("企微消息适配", () => {
       args: [frame, {
         card_type: "button_interaction",
         main_title: { title: "请选择要修改的项目" },
-        sub_title_text: "选择后会立即创建代码修改任务。",
         button_list: [
           { text: "管理后台", key: "admin-panel", style: 1 },
           { text: "桌面客户端", key: "desktop-client", style: 1 },
@@ -174,7 +173,7 @@ describe("企微消息适配", () => {
     }]);
   });
 
-  it("接收项目卡片点击事件并通过事件帧立即更新卡片", async () => {
+  it("接收企微真实的嵌套项目卡片事件并继续处理原消息", async () => {
     const listeners = new Map<string, (payload: unknown) => Promise<void> | void>();
     const { client: base, calls } = fakeClient();
     const client: EventedWeComClient = {
@@ -211,8 +210,10 @@ describe("企微消息适配", () => {
         chatid: "group-1",
         event: {
           eventtype: "template_card_event",
-          event_key: "admin-panel",
-          task_id: "select_task-001",
+          template_card_event: {
+            event_key: "admin-panel",
+            task_id: "select_task-001",
+          },
         },
       },
     };

@@ -34,8 +34,13 @@ export type ProjectSelectionFrame = {
     from: { userid: string };
     chatid?: string;
     event: {
+      eventtype?: string;
       event_key?: string;
       task_id?: string;
+      template_card_event?: {
+        event_key?: string;
+        task_id?: string;
+      };
     };
   };
 };
@@ -200,7 +205,6 @@ function commonMessage(
       await client.replyTemplateCard(frame, {
         card_type: "button_interaction",
         main_title: { title: "请选择要修改的项目" },
-        sub_title_text: "选择后会立即创建代码修改任务。",
         button_list: projects.map((project) => ({
           text: project.displayName,
           key: project.projectId,
@@ -312,8 +316,9 @@ export function startWeComGateway(options: StartWeComGatewayOptions): { stop(): 
   options.client.on("event.template_card_event", async (payload) => {
     try {
       const frame = payload as ProjectSelectionFrame;
-      const selectionId = frame.body.event.task_id;
-      const projectId = frame.body.event.event_key;
+      const event = frame.body.event.template_card_event ?? frame.body.event;
+      const selectionId = event.task_id;
+      const projectId = event.event_key;
       if (selectionId === undefined || projectId === undefined) {
         throw new Error("企微项目选择事件缺少 task_id 或 event_key");
       }
